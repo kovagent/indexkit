@@ -270,4 +270,65 @@ mod tests {
         assert_eq!(out[1].source, DataSource::SecNport);
         assert_eq!(out[0].as_of, NaiveDate::from_ymd_opt(2024, 1, 15).unwrap());
     }
+
+    #[test]
+    fn write_read_github_mirror_nan_weight_roundtrip() {
+        let d = tempdir().unwrap();
+        let data = d.path();
+        let date = NaiveDate::from_ymd_opt(1996, 1, 2).unwrap();
+        let ym = crate::date::YearMonth::new(1996, 1).unwrap();
+        let rows = vec![
+            Constituent {
+                ticker: Some("AAPL".into()),
+                name: String::new(),
+                cusip: String::new(),
+                lei: None,
+                shares: 0.0,
+                market_value_usd: 0.0,
+                weight: f64::NAN,
+                issuer_cik: None,
+                sector: None,
+                as_of: date,
+                source: DataSource::GithubFja05680,
+            },
+            Constituent {
+                ticker: Some("MSFT".into()),
+                name: String::new(),
+                cusip: String::new(),
+                lei: None,
+                shares: 0.0,
+                market_value_usd: 0.0,
+                weight: f64::NAN,
+                issuer_cik: None,
+                sector: None,
+                as_of: date,
+                source: DataSource::GithubYfiua { month: ym },
+            },
+            Constituent {
+                ticker: Some("NVDA".into()),
+                name: String::new(),
+                cusip: String::new(),
+                lei: None,
+                shares: 0.0,
+                market_value_usd: 0.0,
+                weight: f64::NAN,
+                issuer_cik: None,
+                sector: None,
+                as_of: date,
+                source: DataSource::GithubHanshof,
+            },
+        ];
+
+        write_month(data, "sp500", "1996-01", &rows).unwrap();
+        let out = read_month(&data.join("sp500").join("sp500-1996-01.parquet")).unwrap();
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().all(|c| c.weight.is_nan()));
+        assert!(out.iter().all(|c| c.cusip.is_empty()));
+        assert!(out.iter().all(|c| c.weight_opt().is_none()));
+
+        let sources: Vec<_> = out.iter().map(|c| c.source.clone()).collect();
+        assert!(sources.contains(&DataSource::GithubFja05680));
+        assert!(sources.contains(&DataSource::GithubYfiua { month: ym }));
+        assert!(sources.contains(&DataSource::GithubHanshof));
+    }
 }

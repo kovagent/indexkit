@@ -7,9 +7,18 @@ use serde::{Deserialize, Serialize};
 
 /// Which upstream source produced a given row.
 ///
-/// Rows written by different sources for the same `(index, date)` are
-/// coalesced by the [`crate::coalesce`] layer with the priority
-/// `Cdn > Wayback > Nport`.
+/// Rows written by different sources for the same `(index, identity, date)`
+/// are coalesced by the [`crate::coalesce`] layer with a priority ladder
+/// (highest first):
+///
+/// | Priority | Variant                    | Coverage             | Fields       |
+/// |----------|----------------------------|----------------------|--------------|
+/// | 5        | `IsharesCdn`, `InvescoCdn`, `SpdrCdn` | forward, daily    | full         |
+/// | 4        | `GithubFja05680`           | 1996-present, daily  | ticker only  |
+/// | 3        | `GithubYfiua { month }`    | ~2018-present, monthly | ticker only |
+/// | 3        | `GithubHanshof`            | 1996-present, daily  | ticker only  |
+/// | 2        | `Wayback(date)`            | 2019+, sparse        | varies       |
+/// | 1        | `SecNport`                 | 2019-11-present, monthly | full (no ticker) |
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataSource {
@@ -31,6 +40,34 @@ pub enum DataSource {
     /// SEC EDGAR N-PORT filing -- monthly baseline, guaranteed from
     /// 2019-11 onwards.
     SecNport,
+    /// fja05680/sp500 GitHub mirror (MIT license).
+    ///
+    /// Daily S&P 500 component changes from 1996-01-02 onwards. Rows
+    /// provide ticker only (no CUSIP / LEI / weight / shares). Maintained
+    /// by Farrell J. Aultman.
+    ///
+    /// Source repo: <https://github.com/fja05680/sp500>.
+    GithubFja05680,
+    /// yfiua/index-constituents GitHub mirror (Apache-2.0 license).
+    ///
+    /// Monthly snapshots of major index constituents (S&P 500, Nasdaq-100,
+    /// Dow Jones, etc.) from 2018 onwards. Rows provide ticker only.
+    ///
+    /// `month` is the `YYYY-MM` directory the row was sourced from.
+    ///
+    /// Source repo: <https://github.com/yfiua/index-constituents>.
+    GithubYfiua {
+        /// Year-month the yfiua snapshot belongs to.
+        month: YearMonth,
+    },
+    /// hanshof/sp500_constituents GitHub mirror (MIT license).
+    ///
+    /// Daily S&P 500 historical components, 1996-present. Same shape as
+    /// `GithubFja05680` but maintained independently; used as a cross-
+    /// check layer.
+    ///
+    /// Source repo: <https://github.com/hanshof/sp500_constituents>.
+    GithubHanshof,
 }
 
 impl DataSource {
@@ -42,6 +79,9 @@ impl DataSource {
             DataSource::SpdrCdn => "spdr_cdn".into(),
             DataSource::Wayback(yyyymmdd) => format!("wayback_{yyyymmdd}"),
             DataSource::SecNport => "sec_nport".into(),
+            DataSource::GithubFja05680 => "github_fja05680".into(),
+            DataSource::GithubYfiua { month } => format!("github_yfiua_{month}"),
+            DataSource::GithubHanshof => "github_hanshof".into(),
         }
     }
 
@@ -52,16 +92,27 @@ impl DataSource {
             "invesco_cdn" => Some(DataSource::InvescoCdn),
             "spdr_cdn" => Some(DataSource::SpdrCdn),
             "sec_nport" => Some(DataSource::SecNport),
+            "github_fja05680" => Some(DataSource::GithubFja05680),
+            "github_hanshof" => Some(DataSource::GithubHanshof),
             tag if tag.starts_with("wayback_") => Some(DataSource::Wayback(tag[8..].to_string())),
+            tag if tag.starts_with("github_yfiua_") => {
+                let rest = &tag[13..];
+                rest.parse::<YearMonth>()
+                    .ok()
+                    .map(|month| DataSource::GithubYfiua { month })
+            }
             _ => None,
         }
     }
 
     /// Priority weight. Higher wins when multiple sources cover the same
-    /// `(index, date)`.
+    /// `(index, identity, date)` key during coalesce.
     pub fn priority(&self) -> u8 {
         match self {
-            DataSource::IsharesCdn | DataSource::InvescoCdn | DataSource::SpdrCdn => 3,
+            DataSource::IsharesCdn | DataSource::InvescoCdn | DataSource::SpdrCdn => 5,
+            DataSource::GithubFja05680 => 4,
+            DataSource::GithubYfiua { .. } => 3,
+            DataSource::GithubHanshof => 3,
             DataSource::Wayback(_) => 2,
             DataSource::SecNport => 1,
         }
@@ -85,30 +136,59 @@ pub enum Resolution {
 
 /// One security held by an index ETF on a specific date.
 ///
-/// The full primary join key is **CUSIP**. LEI is available for most
-/// US issuers and can be joined against GLEIF data.
+/// # Field coverage by source
 ///
-/// Ticker coverage depends on the source:
-/// - **Sponsor CDN** (`IsharesCdn`, `InvescoCdn`, `SpdrCdn`): ticker is
-///   typically present (~99 % of holdings).
-/// - **Wayback snapshots**: same as the underlying CDN at capture time.
-/// - **SEC N-PORT** (`SecNport`): ticker is always `None` -- N-PORT does
-///   not include tickers. Use CUSIP as the join key.
+/// Different upstream sources populate different fields. Always present:
+/// `name` (may be empty for ticker-only mirrors), `as_of`, `source`.
+///
+/// | Field        | CDN / Wayback | N-PORT (1) | GitHub mirrors (fja05680, yfiua, hanshof) |
+/// |--------------|---------------|------------|-------------------------------------------|
+/// | `ticker`     | ~99 % present | `None`     | always `Some(t)`                          |
+/// | `cusip`      | present       | present    | empty string (`""`) -- unknown            |
+/// | `lei`        | optional      | present    | `None`                                    |
+/// | `shares`     | present       | present    | `0.0` -- unknown                          |
+/// | `market_value_usd` | present | present    | `0.0` -- unknown                          |
+/// | `weight`     | fraction of NAV | fraction | `f64::NAN` -- unknown, use [`weight_opt`][Self::weight_opt] |
+///
+/// (1) SEC N-PORT has no ticker column; every N-PORT `Constituent::ticker`
+/// is `None`. Use `cusip` as the join key when N-PORT rows are in play.
+///
+/// # Primary join keys
+///
+/// - **CUSIP** -- preferred, always present for CDN / Wayback / N-PORT rows.
+/// - **Ticker** -- preferred when joining GitHub mirror rows (cusip is empty).
+/// - **LEI** -- available for most US issuers, joinable against GLEIF data.
+///
+/// # Missing weights
+///
+/// GitHub mirror rows ([`DataSource::GithubFja05680`],
+/// [`DataSource::GithubYfiua`], [`DataSource::GithubHanshof`]) are
+/// ticker-only -- they carry no weight, shares, or market value. The
+/// `weight` field is set to `f64::NAN` for these rows as a sentinel.
+/// Prefer [`weight_opt`][Self::weight_opt] for consumer code that needs
+/// to branch on presence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Constituent {
     /// Ticker symbol.
     pub ticker: Option<String>,
     /// Security name as reported on the source file (issuer + share class).
     pub name: String,
-    /// CUSIP (9-char). Primary join key; always present.
+    /// CUSIP (9-char). Primary join key for CDN / Wayback / N-PORT rows.
+    /// Empty string for GitHub mirror rows (ticker-only sources).
     pub cusip: String,
     /// Legal Entity Identifier (20-char) -- ISO 17442 issuer ID.
     pub lei: Option<String>,
     /// Shares held (floating point: allows fractional shares for some ETFs).
+    /// `0.0` when unknown (GitHub mirror sources).
     pub shares: f64,
     /// Fair value in USD as reported on the source file.
+    /// `0.0` when unknown (GitHub mirror sources).
     pub market_value_usd: f64,
     /// Weight as fraction of NAV in `[0.0, 1.0]`.
+    ///
+    /// `f64::NAN` when the source does not carry weight data (GitHub mirror
+    /// sources). Use [`weight_opt`][Self::weight_opt] for an `Option<f64>`
+    /// that returns `None` on `NaN`.
     pub weight: f64,
     /// SEC CIK of the issuer, if identifiable. Usually `None`.
     pub issuer_cik: Option<String>,
@@ -120,6 +200,43 @@ pub struct Constituent {
     pub as_of: NaiveDate,
     /// Upstream that produced this row.
     pub source: DataSource,
+}
+
+impl Constituent {
+    /// Weight as [`Option<f64>`].
+    ///
+    /// Returns `None` when [`weight`][Self::weight] is `NaN` (the sentinel
+    /// used by ticker-only GitHub mirror sources) or a subnormal/infinite
+    /// value. Otherwise returns `Some(weight)`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use indexkit::{Constituent, DataSource};
+    /// use chrono::NaiveDate;
+    ///
+    /// let row = Constituent {
+    ///     ticker: Some("AAPL".into()),
+    ///     name: "".into(),
+    ///     cusip: "".into(),
+    ///     lei: None,
+    ///     shares: 0.0,
+    ///     market_value_usd: 0.0,
+    ///     weight: f64::NAN,
+    ///     issuer_cik: None,
+    ///     sector: None,
+    ///     as_of: NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+    ///     source: DataSource::GithubFja05680,
+    /// };
+    /// assert_eq!(row.weight_opt(), None);
+    /// ```
+    pub fn weight_opt(&self) -> Option<f64> {
+        if self.weight.is_finite() {
+            Some(self.weight)
+        } else {
+            None
+        }
+    }
 }
 
 /// GICS sector placeholder.
@@ -157,6 +274,22 @@ pub struct IndexSnapshot {
     pub year_month: YearMonth,
     /// Holdings. Multi-date if daily data is available.
     pub constituents: Vec<Constituent>,
+}
+
+impl IndexSnapshot {
+    /// Whether this snapshot carries weight data.
+    ///
+    /// Returns `true` if at least one row has a finite `weight` value
+    /// (i.e. it came from a CDN, Wayback, or N-PORT source). Returns
+    /// `false` if every row is ticker-only (all GitHub mirror sources)
+    /// or the snapshot is empty.
+    ///
+    /// Useful as a quick gate for analytics code: a snapshot with
+    /// `has_weights() == false` is a ticker universe only, not a weight
+    /// vector.
+    pub fn has_weights(&self) -> bool {
+        self.constituents.iter().any(|c| c.weight.is_finite())
+    }
 }
 
 /// Single-day snapshot -- every holding as of a specific date.
@@ -259,5 +392,119 @@ mod tests {
     #[test]
     fn indexid_unknown() {
         assert_eq!(IndexId::from_str_id("totally-fake"), None);
+    }
+
+    #[test]
+    fn data_source_tag_roundtrip_core() {
+        for ds in [
+            DataSource::IsharesCdn,
+            DataSource::InvescoCdn,
+            DataSource::SpdrCdn,
+            DataSource::SecNport,
+            DataSource::GithubFja05680,
+            DataSource::GithubHanshof,
+            DataSource::Wayback("20240315".into()),
+            DataSource::GithubYfiua {
+                month: YearMonth::new(2024, 3).unwrap(),
+            },
+        ] {
+            let tag = ds.tag();
+            let back = DataSource::from_tag(&tag).expect("parseable");
+            assert_eq!(back, ds, "tag {tag} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn data_source_priority_ladder() {
+        assert_eq!(DataSource::IsharesCdn.priority(), 5);
+        assert_eq!(DataSource::InvescoCdn.priority(), 5);
+        assert_eq!(DataSource::SpdrCdn.priority(), 5);
+        assert_eq!(DataSource::GithubFja05680.priority(), 4);
+        assert_eq!(
+            DataSource::GithubYfiua {
+                month: YearMonth::new(2024, 3).unwrap()
+            }
+            .priority(),
+            3
+        );
+        assert_eq!(DataSource::GithubHanshof.priority(), 3);
+        assert_eq!(DataSource::Wayback("20240315".into()).priority(), 2);
+        assert_eq!(DataSource::SecNport.priority(), 1);
+    }
+
+    fn ticker_only_row(ticker: &str, date: NaiveDate, src: DataSource) -> Constituent {
+        Constituent {
+            ticker: Some(ticker.into()),
+            name: String::new(),
+            cusip: String::new(),
+            lei: None,
+            shares: 0.0,
+            market_value_usd: 0.0,
+            weight: f64::NAN,
+            issuer_cik: None,
+            sector: None,
+            as_of: date,
+            source: src,
+        }
+    }
+
+    #[test]
+    fn weight_opt_nan_is_none() {
+        let d = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
+        let row = ticker_only_row("AAPL", d, DataSource::GithubFja05680);
+        assert_eq!(row.weight_opt(), None);
+    }
+
+    #[test]
+    fn weight_opt_finite_is_some() {
+        let d = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
+        let mut row = ticker_only_row("AAPL", d, DataSource::IsharesCdn);
+        row.weight = 0.072;
+        assert_eq!(row.weight_opt(), Some(0.072));
+    }
+
+    #[test]
+    fn weight_opt_infinity_is_none() {
+        let d = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
+        let mut row = ticker_only_row("AAPL", d, DataSource::IsharesCdn);
+        row.weight = f64::INFINITY;
+        assert_eq!(row.weight_opt(), None);
+    }
+
+    #[test]
+    fn snapshot_has_weights_true_when_any_finite() {
+        let d = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
+        let mut with_weight = ticker_only_row("AAPL", d, DataSource::IsharesCdn);
+        with_weight.weight = 0.05;
+        let nan_row = ticker_only_row("MSFT", d, DataSource::GithubFja05680);
+        let s = IndexSnapshot {
+            index: IndexId::Sp500,
+            year_month: YearMonth::new(2024, 1).unwrap(),
+            constituents: vec![with_weight, nan_row],
+        };
+        assert!(s.has_weights());
+    }
+
+    #[test]
+    fn snapshot_has_weights_false_when_all_nan() {
+        let d = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
+        let row1 = ticker_only_row("AAPL", d, DataSource::GithubFja05680);
+        let row2 = ticker_only_row("MSFT", d, DataSource::GithubHanshof);
+        let s = IndexSnapshot {
+            index: IndexId::Sp500,
+            year_month: YearMonth::new(2024, 1).unwrap(),
+            constituents: vec![row1, row2],
+        };
+        assert!(!s.has_weights());
+    }
+
+    #[test]
+    fn snapshot_has_weights_false_when_empty() {
+        let s = IndexSnapshot {
+            index: IndexId::Sp500,
+            year_month: YearMonth::new(2024, 1).unwrap(),
+            constituents: Vec::new(),
+        };
+        assert!(!s.has_weights());
     }
 }

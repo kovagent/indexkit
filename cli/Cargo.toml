@@ -14,7 +14,7 @@ name = "indexkit-cli"
 path = "src/main.rs"
 
 [dependencies]
-indexkit = { path = "../crates/indexkit", version = "1.0.0" }
+indexkit = { path = "../crates/indexkit", version = "1.0.1" }
 
 anyhow.workspace = true
 tokio.workspace = true

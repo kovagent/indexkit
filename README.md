@@ -2,22 +2,40 @@
 
 Index constituent service for Rust -- **daily** holdings of the S&P 500,
 S&P MidCap 400, S&P SmallCap 600, Nasdaq-100, and Dow Jones Industrial
-Average. Three layered sources by priority (live sponsor CDN > Internet
-Archive Wayback Machine > SEC EDGAR N-PORT). Served from bundled parquet
-with runtime GitHub fetch and local cache. No API keys. Offline after
-first query.
+Average. Six layered sources by priority (live sponsor CDN > OSS GitHub
+mirrors > Internet Archive Wayback Machine > SEC EDGAR N-PORT). Served
+from bundled parquet with runtime GitHub fetch and local cache. No API
+keys. Offline after first query.
 
 ## Sources
 
-| Priority | Source | Coverage | Granularity | Latency |
-|---|---|---|---|---|
-| 3 (highest) | Sponsor CDN (iShares / Invesco / SPDR) | forward-going | daily | T+1 |
-| 2 | Internet Archive Wayback Machine | 2019-11 - present, patchy | daily when captured | archival |
-| 1 (baseline) | SEC EDGAR N-PORT | 2019-11 - present | monthly | T+90d |
+| Priority | Source | License | Coverage | Granularity | Fields |
+|---|---|---|---|---|---|
+| 5 (highest) | Sponsor CDN (iShares / Invesco / SPDR) | public / ToS | forward-going | daily | full |
+| 4 | [fja05680/sp500] | MIT | 1996-01-02 - 2026 | daily change-rows | tickers only |
+| 3 | [yfiua/index-constituents] | Apache-2.0 | ~2018 - present | monthly | tickers only |
+| 3 | [hanshof/sp500_constituents] | MIT | 1996 - present | daily change-rows | tickers only |
+| 2 | Internet Archive Wayback Machine | fair-use | 2019-11 - present, patchy | daily when captured | varies |
+| 1 (baseline) | SEC EDGAR N-PORT | public domain | 2019-11 - present | monthly | full (no ticker) |
 
-When multiple sources cover the same `(index, cusip, date)` the higher-
-priority row wins. Every row is stamped with a `source` column so callers
-can filter by confidence.
+[fja05680/sp500]: https://github.com/fja05680/sp500
+[yfiua/index-constituents]: https://github.com/yfiua/index-constituents
+[hanshof/sp500_constituents]: https://github.com/hanshof/sp500_constituents
+
+Every row is stamped with a `source` column (see [`DataSource`](https://docs.rs/indexkit/latest/indexkit/types/enum.DataSource.html))
+so callers can filter by confidence. When rows from multiple sources
+cover the same `(identity, date)` key, the higher-priority source wins
+during coalesce; `identity` is CUSIP where present, falling back to
+ticker for the GitHub mirror sources (which are ticker-only).
+
+### Field coverage by source
+
+Ticker-only sources (the three GitHub mirrors) produce rows where
+`cusip`, `lei`, `issuer_cik` are empty, `shares` and `market_value_usd`
+are `0.0`, and `weight` is `f64::NAN`. Use [`Constituent::weight_opt()`](https://docs.rs/indexkit/latest/indexkit/types/struct.Constituent.html#method.weight_opt)
+for an `Option<f64>` that returns `None` on the NaN sentinel, or
+[`IndexSnapshot::has_weights()`](https://docs.rs/indexkit/latest/indexkit/types/struct.IndexSnapshot.html#method.has_weights)
+for a quick "is this a weight vector or just a ticker universe" gate.
 
 ## Install
 
@@ -135,6 +153,12 @@ indexkit-cli daily-fetch --index sp500 --accept-sponsor-tos
 # Historical daily backfill from Wayback Machine
 indexkit-cli wayback-backfill --index sp500
 indexkit-cli wayback-backfill --index sp500 --from 2021-01-01 --to 2021-12-31
+
+# OSS GitHub mirrors (permissive licenses, massive historical coverage)
+indexkit-cli github-backfill                   # all three (fja05680 + yfiua + hanshof)
+indexkit-cli github-backfill --source fja05680 # S&P 500 daily 1996+ (MIT)
+indexkit-cli github-backfill --source yfiua    # sp500 / ndx / dji monthly, 2018+ (Apache-2.0)
+indexkit-cli github-backfill --source hanshof  # S&P 500 daily 1996+ cross-check (MIT)
 
 # Append newly-published N-PORT filings (used by nightly CI)
 indexkit-cli nightly-append
@@ -322,8 +346,37 @@ details.
 | `indexkit` | Library -- fetcher, cache, types, N-PORT parser |
 | `indexkit-cli` | Binary -- backfill, nightly-append, get |
 
+## Attribution
+
+indexkit v1.0.1 ingests historical constituent data from three OSS
+GitHub repositories. Verbatim upstream LICENSE files ship in
+[`data/licenses/`](data/licenses/); each source is credited in the
+`source` column of the parquet output.
+
+- **[fja05680/sp500]** by Farrell J. Aultman (MIT) -- S&P 500 daily
+  historical components and changes, 1996-01-02 to present. indexkit's
+  `DataSource::GithubFja05680` rows are derived from this dataset.
+- **[yfiua/index-constituents]** (Apache-2.0) -- monthly snapshots of
+  the S&P 500, Nasdaq-100, Dow Jones and several non-US indices, with
+  tooling to scrape them from Wikipedia and equivalent sources.
+  indexkit's `DataSource::GithubYfiua` rows are derived from this
+  dataset.
+- **[hanshof/sp500_constituents]** by running_error (MIT) -- S&P 500
+  daily historical components, 1996 to present. indexkit's
+  `DataSource::GithubHanshof` rows are derived from this dataset and
+  used as a cross-check layer for fja05680.
+
+Thanks to all three upstream maintainers for keeping these datasets
+open.
+
 ## License
 
 Apache-2.0 -- see [`LICENSE`](LICENSE).
+
+The derivative parquet files in `data/` combine public-domain SEC EDGAR
+filings, Internet Archive snapshots, and the three OSS GitHub mirrors
+listed above. Each source is identified per-row via the `source`
+column; upstream license terms (MIT and Apache-2.0) are retained for
+the OSS sources and are shipped verbatim in `data/licenses/`.
 
 Copyright 2026 userFRM

@@ -1,10 +1,21 @@
-//! `indexkit` -- index constituent service for Rust, sourced from SEC EDGAR
-//! N-PORT filings.
+//! `indexkit` -- index constituent service for Rust.
 //!
-//! Monthly snapshots of the S&P 500, S&P MidCap 400, S&P SmallCap 600,
-//! Nasdaq-100, and Dow Jones Industrial Average, served from parquet files
-//! with runtime GitHub fetch and local cache. No API keys. Public domain
-//! data. Offline after the first successful fetch.
+//! Daily / monthly snapshots of the S&P 500, S&P MidCap 400, S&P SmallCap
+//! 600, Nasdaq-100, and Dow Jones Industrial Average, served from bundled
+//! parquet files with runtime GitHub fetch and local cache. No API keys.
+//! Offline after the first successful fetch.
+//!
+//! Data sources layer by priority (see [`types::DataSource`]):
+//! sponsor CDNs (iShares / Invesco / SPDR) > OSS GitHub mirrors
+//! ([fja05680/sp500], [yfiua/index-constituents],
+//! [hanshof/sp500_constituents]) > Internet Archive Wayback > SEC EDGAR
+//! N-PORT. The S&P 500 now has daily rows from 1996-01-02 onward via the
+//! GitHub mirrors; other indices still start 2019-11 via N-PORT (plus
+//! sponsor-CDN forward-going).
+//!
+//! [fja05680/sp500]: https://github.com/fja05680/sp500
+//! [yfiua/index-constituents]: https://github.com/yfiua/index-constituents
+//! [hanshof/sp500_constituents]: https://github.com/hanshof/sp500_constituents
 //!
 //! # Quick start -- one-off scripts
 //!
@@ -65,27 +76,44 @@
 //! | `INDEXKIT_CACHE_DIR` | Override `~/.cache/indexkit/` |
 //! | `INDEXKIT_MIRROR_URL` | CDN mirror fallback URL (default: jsDelivr) |
 //!
-//! # Limitations (v1.0)
+//! # Field coverage per source
 //!
-//! - **No ticker**: N-PORT does not include ticker symbols. Every
-//!   [`Constituent::ticker`] is `None`. Use CUSIP (always present) as the
-//!   join key and enrich downstream via OpenFIGI or a CUSIP->ticker map.
+//! Which columns a given [`Constituent`] carries depends on the row's
+//! [`DataSource`]. Sponsor-CDN / Wayback / N-PORT rows are full-field
+//! (weight, shares, market value, CUSIP). GitHub mirror rows
+//! ([`DataSource::GithubFja05680`], [`DataSource::GithubYfiua`],
+//! [`DataSource::GithubHanshof`]) are ticker-only: `weight` is
+//! `f64::NAN`, `cusip` is empty, `shares` / `market_value_usd` are `0.0`.
+//! Use [`Constituent::weight_opt`] for an `Option<f64>` accessor that
+//! returns `None` on NaN.
+//!
+//! # Limitations (v1.0.x)
+//!
+//! - **No ticker from N-PORT**: SEC N-PORT does not include ticker
+//!   symbols. `SecNport` rows set [`Constituent::ticker`] to `None`.
+//!   GitHub mirror rows populate ticker.
+//! - **No weight/shares from GitHub mirrors**: the three GitHub OSS
+//!   mirrors are ticker-only. They provide composition history but no
+//!   per-holding weight vector.
 //! - **No GICS sector**: reserved for v1.1 via SIC -> GICS cross-walk.
-//! - **60-90 day filing lag**: ETFs file N-PORT ~60 days after each month's
-//!   period end, so "latest" is typically two months behind today. This is
-//!   a regulatory constraint, not a crawler limitation.
-//! - **Coverage starts 2019-11**: SEC Rule 30b1-9 N-PORT public filing
-//!   effective date.
+//! - **60-90 day filing lag** for N-PORT: unavoidable regulatory
+//!   constraint. GitHub mirrors and sponsor-CDN close the recency gap.
 //!
 //! # Modules
 //!
 //! - [`client`] -- [`Indexkit`] async client with blocking wrappers.
 //! - [`date`] -- [`YearMonth`] newtype for month inputs.
-//! - [`types`] -- [`Constituent`], [`IndexSnapshot`], [`IndexId`].
+//! - [`types`] -- [`Constituent`], [`IndexSnapshot`], [`IndexId`],
+//!   [`types::DataSource`].
+//! - [`github_mirror`] -- OSS GitHub CSV fetchers (fja05680, yfiua,
+//!   hanshof) with ticker parsers and forward-fill helper.
 //! - [`nport`] -- N-PORT `primary_doc.xml` parser.
+//! - [`sponsor`] -- sponsor-CDN CSV parsers.
+//! - [`wayback`] -- Internet Archive CDX + snapshot client.
 //! - [`cik`] -- ETF -> CIK / series mapping (verified against live SEC).
 //! - [`parquet_io`] -- parquet writer + reader.
 //! - [`sec`] -- SEC EDGAR client used by the CLI for backfill.
+//! - [`coalesce`] -- merge rows from multiple sources into one snapshot.
 //! - [`error`] -- unified [`Error`] enum and [`Result`] alias.
 
 pub mod cik;
@@ -94,6 +122,7 @@ pub mod coalesce;
 pub mod date;
 pub mod error;
 pub(crate) mod fetcher;
+pub mod github_mirror;
 pub mod nport;
 pub mod parquet_io;
 pub mod sec;

@@ -1,5 +1,5 @@
-//! `indexkit-cli` -- SEC EDGAR N-PORT + sponsor CDN + Wayback backfill +
-//! append + inspect.
+//! `indexkit-cli` -- SEC EDGAR N-PORT + sponsor CDN + Wayback + GitHub OSS
+//! backfill + append + inspect.
 //!
 //! # Commands
 //!
@@ -10,6 +10,8 @@
 //! indexkit-cli daily-fetch --accept-sponsor-tos      # live sponsor CDN (all)
 //! indexkit-cli daily-fetch --index sp500 --accept-sponsor-tos
 //! indexkit-cli wayback-backfill --index sp500        # IA snapshots, one index
+//! indexkit-cli github-backfill                       # all 3 OSS mirrors (fja05680, yfiua, hanshof)
+//! indexkit-cli github-backfill --source fja05680     # just one OSS source
 //! indexkit-cli nightly-append                        # SEC latest-month append
 //! indexkit-cli get sp500 --month 2024-01             # read constituents
 //! indexkit-cli manifest                              # regenerate manifest.json
@@ -18,9 +20,13 @@
 
 use anyhow::{bail, Context, Result};
 use chrono::{Datelike, NaiveDate, Utc};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use indexkit::cik::{all_entries, entry_for, CikEntry};
 use indexkit::coalesce::coalesce;
+use indexkit::github_mirror::{
+    fetch_fja05680_sp500, fetch_hanshof_sp500, fetch_yfiua_full, forward_fill,
+    tickers_to_constituents,
+};
 use indexkit::nport::holdings_to_constituents;
 use indexkit::parquet_io::{read_month, write_month};
 use indexkit::sec::SecClient;
@@ -90,6 +96,19 @@ enum Command {
         to: Option<String>,
     },
 
+    /// Ingest ticker-only historical constituents from the three free OSS
+    /// GitHub mirrors: fja05680/sp500 (MIT), yfiua/index-constituents
+    /// (Apache-2.0), hanshof/sp500_constituents (MIT).
+    ///
+    /// All rows are tagged with the appropriate `DataSource::Github*`
+    /// variant. Existing N-PORT / CDN / Wayback data is preserved; the
+    /// coalesce layer dedupes by `(identity, as_of)` on parquet write.
+    GithubBackfill {
+        /// Restrict to one OSS source. Default: all three.
+        #[arg(long, value_enum)]
+        source: Option<GithubSource>,
+    },
+
     /// Fetch any new N-PORT filings since last run and append.
     NightlyAppend,
 
@@ -106,6 +125,19 @@ enum Command {
 
     /// Write `data/cik-map.json` -- committed for non-Rust consumers.
     CikMap,
+}
+
+/// Which OSS GitHub mirror to ingest.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum GithubSource {
+    /// fja05680/sp500 -- S&P 500 daily change-rows, 1996 -> present.
+    Fja05680,
+    /// yfiua/index-constituents -- S&P 500 / Nasdaq-100 / Dow Jones
+    /// monthly snapshots, ~2018 -> present.
+    Yfiua,
+    /// hanshof/sp500_constituents -- S&P 500 daily change-rows, 1996 ->
+    /// present. Cross-check layer.
+    Hanshof,
 }
 
 // ---- Entry point ----
@@ -138,6 +170,7 @@ async fn main() -> Result<()> {
             cmd_wayback_backfill(&data_dir, index.as_deref(), from.as_deref(), to.as_deref())
                 .await?
         }
+        Command::GithubBackfill { source } => cmd_github_backfill(&data_dir, source).await?,
         Command::NightlyAppend => cmd_nightly_append(&data_dir).await?,
         Command::Get { index, month } => cmd_get(&data_dir, &index, month.as_deref())?,
         Command::Manifest => cmd_manifest(&data_dir)?,
@@ -438,6 +471,171 @@ async fn cmd_wayback_backfill(
     Ok(())
 }
 
+// ---- github-backfill (OSS mirror ingestion) ----
+
+async fn cmd_github_backfill(data_dir: &Path, source: Option<GithubSource>) -> Result<()> {
+    let mut had_errors = false;
+    let run = |src: GithubSource| match src {
+        GithubSource::Fja05680 => "fja05680",
+        GithubSource::Yfiua => "yfiua",
+        GithubSource::Hanshof => "hanshof",
+    };
+    let sources: Vec<GithubSource> = match source {
+        Some(s) => vec![s],
+        None => vec![
+            GithubSource::Fja05680,
+            GithubSource::Yfiua,
+            GithubSource::Hanshof,
+        ],
+    };
+
+    // Cross-check bucket: collect per-date ticker-sets from fja05680 and
+    // hanshof so we can log disagreements after both have loaded.
+    let mut fja_by_date: BTreeMap<NaiveDate, std::collections::BTreeSet<String>> = BTreeMap::new();
+    let mut hanshof_by_date: BTreeMap<NaiveDate, std::collections::BTreeSet<String>> =
+        BTreeMap::new();
+
+    for src in sources {
+        let tag = run(src);
+        println!("github-backfill: ingesting {tag}");
+        let res = match src {
+            GithubSource::Fja05680 => {
+                ingest_daily_sp500(data_dir, DataSource::GithubFja05680, &mut fja_by_date).await
+            }
+            GithubSource::Yfiua => ingest_yfiua_all(data_dir).await,
+            GithubSource::Hanshof => {
+                ingest_daily_sp500(data_dir, DataSource::GithubHanshof, &mut hanshof_by_date).await
+            }
+        };
+        match res {
+            Ok(count) => println!("github-backfill: {tag} wrote {count} month files"),
+            Err(e) => {
+                tracing::error!("github-backfill {tag} failed: {e}");
+                had_errors = true;
+            }
+        }
+    }
+
+    // Cross-check log: fja05680 vs hanshof disagreement on same date.
+    if !fja_by_date.is_empty() && !hanshof_by_date.is_empty() {
+        let mut disagree = 0usize;
+        for (date, fja_set) in &fja_by_date {
+            let Some(hanshof_set) = hanshof_by_date.get(date) else {
+                continue;
+            };
+            if fja_set != hanshof_set {
+                disagree += 1;
+                // Log deterministic diff summary but cap the per-date spam.
+                if disagree <= 10 {
+                    let only_fja: Vec<_> = fja_set.difference(hanshof_set).take(5).collect();
+                    let only_hanshof: Vec<_> = hanshof_set.difference(fja_set).take(5).collect();
+                    tracing::warn!(
+                        "github-backfill cross-check {date}: fja-only={:?} hanshof-only={:?}",
+                        only_fja,
+                        only_hanshof,
+                    );
+                }
+            }
+        }
+        if disagree > 0 {
+            println!(
+                "github-backfill: cross-check found {disagree} dates where \
+                 fja05680 and hanshof disagree (see warnings above). \
+                 Higher-priority source wins at coalesce."
+            );
+        }
+    }
+
+    if had_errors {
+        bail!("one or more github-backfill sources failed (see logs above)");
+    }
+    Ok(())
+}
+
+/// Ingest a daily change-row SP500 source (fja05680 or hanshof).
+///
+/// Forward-fills change-rows into per-calendar-day rows, groups by
+/// year-month, and writes each month parquet merged with existing rows.
+async fn ingest_daily_sp500(
+    data_dir: &Path,
+    source: DataSource,
+    record_by_date: &mut BTreeMap<NaiveDate, std::collections::BTreeSet<String>>,
+) -> Result<usize> {
+    let changes = match source {
+        DataSource::GithubFja05680 => fetch_fja05680_sp500()
+            .await
+            .context("fetch fja05680/sp500")?,
+        DataSource::GithubHanshof => fetch_hanshof_sp500()
+            .await
+            .context("fetch hanshof/sp500_constituents")?,
+        _ => bail!("ingest_daily_sp500: unsupported source {source:?}"),
+    };
+    if changes.is_empty() {
+        bail!("upstream returned zero change-rows");
+    }
+    let daily = forward_fill(&changes);
+    tracing::info!(
+        "{:?}: {} change-rows expanded to {} calendar-day rows",
+        source,
+        changes.len(),
+        daily.len()
+    );
+    let idx = IndexId::Sp500;
+    let mut by_month: BTreeMap<YearMonth, Vec<Constituent>> = BTreeMap::new();
+    for (date, tickers) in daily {
+        record_by_date.insert(date, tickers.iter().cloned().collect());
+        let ym = YearMonth::new(date.year(), date.month()).unwrap();
+        let rows = tickers_to_constituents(&tickers, date, source.clone());
+        by_month.entry(ym).or_default().extend(rows);
+    }
+    let months = by_month.len();
+    for (ym, rows) in by_month {
+        let old = existing_rows(data_dir, idx.as_str(), ym);
+        let merged = coalesce(vec![old, rows]);
+        write_month(data_dir, idx.as_str(), &ym.to_string(), &merged)
+            .with_context(|| format!("writing {idx} {ym}"))?;
+    }
+    Ok(months)
+}
+
+/// Ingest every available yfiua month for every yfiua-supported index.
+async fn ingest_yfiua_all(data_dir: &Path) -> Result<usize> {
+    let indices = [IndexId::Sp500, IndexId::Ndx, IndexId::Dji];
+    let mut total = 0usize;
+    for idx in indices {
+        let pairs = match fetch_yfiua_full(idx, None, None).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(%idx, "yfiua fetch failed: {e}");
+                continue;
+            }
+        };
+        tracing::info!(%idx, count = pairs.len(), "yfiua months fetched");
+        for (ym, tickers) in pairs {
+            if tickers.is_empty() {
+                continue;
+            }
+            // yfiua's monthly snapshot is stamped at the 15th of the month --
+            // a deterministic synthetic mid-month date for the parquet `as_of`.
+            let day = yfiua_mid_month(ym);
+            let source = DataSource::GithubYfiua { month: ym };
+            let rows = tickers_to_constituents(&tickers, day, source);
+            let old = existing_rows(data_dir, idx.as_str(), ym);
+            let merged = coalesce(vec![old, rows]);
+            write_month(data_dir, idx.as_str(), &ym.to_string(), &merged)
+                .with_context(|| format!("writing {idx} {ym} (yfiua)"))?;
+            total += 1;
+        }
+    }
+    Ok(total)
+}
+
+/// Deterministic mid-month date for yfiua's monthly stamp.
+fn yfiua_mid_month(ym: YearMonth) -> NaiveDate {
+    NaiveDate::from_ymd_opt(ym.year(), ym.month(), 15)
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(ym.year(), ym.month(), 1).unwrap())
+}
+
 // ---- nightly-append (SEC N-PORT only) ----
 
 async fn cmd_nightly_append(data_dir: &Path) -> Result<()> {
@@ -514,18 +712,24 @@ fn cmd_get(data_dir: &Path, index: &str, month: Option<&str>) -> Result<()> {
         cs.len()
     );
     println!(
-        "{:<40} {:<12} {:<10} {:<14} {:>11}",
-        "Name", "CUSIP", "Date", "Source", "Weight %"
+        "{:<8} {:<40} {:<12} {:<10} {:<24} {:>11}",
+        "Ticker", "Name", "CUSIP", "Date", "Source", "Weight %"
     );
-    println!("{}", "-".repeat(90));
+    println!("{}", "-".repeat(112));
     for c in cs.iter().take(30) {
+        let weight_str = if c.weight.is_finite() {
+            format!("{:>10.4}%", c.weight * 100.0)
+        } else {
+            format!("{:>11}", "-")
+        };
         println!(
-            "{:<40} {:<12} {:<10} {:<14} {:>10.4}%",
+            "{:<8} {:<40} {:<12} {:<10} {:<24} {}",
+            c.ticker.as_deref().unwrap_or("-"),
             truncate(&c.name, 40),
-            c.cusip,
+            if c.cusip.is_empty() { "-" } else { &c.cusip },
             c.as_of,
             c.source.tag(),
-            c.weight * 100.0
+            weight_str,
         );
     }
     if cs.len() > 30 {

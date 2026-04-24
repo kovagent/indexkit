@@ -122,16 +122,26 @@ Implements `IntoYearMonth` for `YearMonth`, `&str`, `String`, `u32`,
 
 ```rust
 pub struct Constituent {
-    pub ticker: Option<String>,      // always None in v1.0
-    pub name: String,
-    pub cusip: String,               // 9 chars, always present
+    pub ticker: Option<String>,      // populated by CDN / GitHub-mirror sources;
+                                     // None for SEC N-PORT rows.
+    pub name: String,                // empty for GitHub-mirror rows
+    pub cusip: String,               // 9 chars for CDN / Wayback / N-PORT;
+                                     // empty string for GitHub mirrors.
     pub lei: Option<String>,
-    pub shares: f64,                 // fractional allowed
-    pub market_value_usd: f64,
-    pub weight: f64,                 // 0.0 - 1.0
-    pub issuer_cik: Option<String>,  // always None in v1.0
-    pub sector: Option<Sector>,      // always None in v1.0
+    pub shares: f64,                 // 0.0 for GitHub mirrors
+    pub market_value_usd: f64,       // 0.0 for GitHub mirrors
+    pub weight: f64,                 // f64::NAN for GitHub mirrors; use weight_opt()
+    pub issuer_cik: Option<String>,
+    pub sector: Option<Sector>,      // reserved for v1.1
+    // + as_of: NaiveDate, source: DataSource
 }
+```
+
+Accessors for missing data:
+
+```rust
+c.weight_opt() -> Option<f64>   // returns None when weight is NaN
+snap.has_weights() -> bool      // true if at least one finite weight
 ```
 
 ### `IndexSnapshot`

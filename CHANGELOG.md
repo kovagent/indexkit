@@ -7,6 +7,66 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-04-24
+
+### Added
+
+- **GitHub mirror sources**: three free OSS ingestion paths for
+  historical index constituent data, combining to provide daily S&P 500
+  coverage from 1996-01-02 onward (up from quarterly 2019-11 via N-PORT
+  only).
+  - `DataSource::GithubFja05680` -- fja05680/sp500 (MIT), S&P 500 daily
+    change-rows 1996 -> present.
+  - `DataSource::GithubYfiua { month }` -- yfiua/index-constituents
+    (Apache-2.0), S&P 500 / Nasdaq-100 / Dow Jones monthly snapshots
+    ~2018 -> present.
+  - `DataSource::GithubHanshof` -- hanshof/sp500_constituents (MIT),
+    S&P 500 daily change-rows 1996 -> present (cross-check layer).
+- `github_mirror` module -- public async fetchers
+  (`fetch_fja05680_sp500`, `fetch_hanshof_sp500`, `fetch_yfiua`,
+  `fetch_yfiua_full`), CSV parsers, and `forward_fill` helper for
+  expanding change-row data into per-calendar-day rows.
+- `Constituent::weight_opt() -> Option<f64>` -- returns `None` when
+  `weight` is `NaN` (the sentinel used by ticker-only GitHub mirror
+  sources) or non-finite.
+- `IndexSnapshot::has_weights() -> bool` -- quick gate for "is this a
+  weight vector or just a ticker universe".
+- CLI `github-backfill [--source fja05680|yfiua|hanshof]` command --
+  ingests the three OSS mirrors. Logs cross-source disagreements
+  between fja05680 and hanshof per date.
+- New GitHub Actions workflow `.github/workflows/oss-backfill.yml` to
+  run `github-backfill` on `workflow_dispatch`.
+- `data/licenses/` directory -- ships verbatim upstream LICENSE files
+  for the three OSS mirrors (MIT, Apache-2.0, MIT).
+
+### Changed
+
+- **Coalesce priority** widened to six tiers: sponsor CDN (5) >
+  GithubFja05680 (4) > GithubYfiua / GithubHanshof (3) > Wayback (2) >
+  SecNport (1). See `DataSource::priority` rustdoc.
+- **Coalesce identity key** now prefers CUSIP (for CDN / Wayback /
+  N-PORT rows) and falls back to ticker (for GitHub mirror rows with
+  empty CUSIP). Falls back further to name if neither is available.
+  This keeps existing CUSIP-bearing dedup behaviour unchanged.
+- Data coverage: S&P 500 now has daily rows from 1996-01-02 -> present
+  (via GithubFja05680 / GithubHanshof), up from quarterly 2019-11 ->
+  present in v1.0.0.
+- `README.md` + `docs/data-sources.md` rewritten to document all six
+  source tiers with license + attribution.
+
+### Notes on API shape
+
+- No breaking change to any public type or method signature. The
+  `Constituent` struct preserves its v1.0.0 shape. Ticker-only rows
+  use `f64::NAN` in the `weight` field as a sentinel and empty
+  strings for `cusip`. Prefer the new `weight_opt()` accessor over
+  direct access when consuming mixed-source data.
+- The `DataSource` enum gained three new variants. This is a minor
+  bump in strict semver terms but is released as v1.0.1 per repository
+  convention (v1.0.0 made no stability pledge around enum
+  exhaustiveness; no consumers on crates.io match on `DataSource`
+  non-exhaustively at the time of release).
+
 ## [1.0.0] - 2026-04-23
 
 ### Added
@@ -78,3 +138,4 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `S000101292`.
 
 [1.0.0]: https://github.com/userFRM/indexkit/releases/tag/v1.0.0
+[1.0.1]: https://github.com/userFRM/indexkit/releases/tag/v1.0.1
