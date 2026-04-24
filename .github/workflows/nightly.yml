@@ -1,0 +1,35 @@
+name: nightly
+on:
+  schedule:
+    # 07:00 UTC Mon-Fri. SEC publishes N-PORT filings continuously; a
+    # weekday morning run captures overnight commits without spamming
+    # weekends when no new filings are ever released.
+    - cron: "0 7 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      INDEXKIT_SEC_USER_AGENT: "indexkit ${{ secrets.CONTACT_EMAIL || 'frederic.miesegaes@gmail.com' }}"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --bin indexkit-cli
+      - name: Nightly append
+        run: ./target/release/indexkit-cli nightly-append
+      - name: Regenerate manifest
+        run: ./target/release/indexkit-cli manifest
+      - name: Commit if changed
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add data/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(data): nightly $(date -u +%Y-%m-%d)"
+            git push
+          fi

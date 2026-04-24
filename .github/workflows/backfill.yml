@@ -1,0 +1,44 @@
+name: backfill
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "First month to fetch, YYYY-MM (default 2019-11 -- earliest public N-PORT)"
+        required: false
+        default: "2019-11"
+      index:
+        description: "Restrict to one index id (sp500, sp400, sp600, ndx, dji) -- leave blank for all"
+        required: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      # SEC requires a descriptive User-Agent with a reachable contact email.
+      INDEXKIT_SEC_USER_AGENT: "indexkit ${{ secrets.CONTACT_EMAIL || 'frederic.miesegaes@gmail.com' }}"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --bin indexkit-cli
+      - name: Backfill
+        run: |
+          if [ -n "${{ github.event.inputs.index }}" ]; then
+            ./target/release/indexkit-cli backfill --index "${{ github.event.inputs.index }}" --start "${{ github.event.inputs.start }}"
+          else
+            ./target/release/indexkit-cli backfill --start "${{ github.event.inputs.start }}"
+          fi
+      - name: Regenerate manifest
+        run: ./target/release/indexkit-cli manifest
+      - name: Regenerate cik-map.json
+        run: ./target/release/indexkit-cli cik-map
+      - name: Commit data
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add data/
+          git diff --cached --quiet || git commit -m "chore(data): backfill via workflow_dispatch"
+          git push

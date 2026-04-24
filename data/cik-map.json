@@ -1,0 +1,37 @@
+{
+  "dji": {
+    "index": "dji",
+    "ticker": "DIA",
+    "name": "SPDR Dow Jones Industrial Average ETF Trust",
+    "trust_cik": "0001041130",
+    "series_id": null
+  },
+  "ndx": {
+    "index": "ndx",
+    "ticker": "QQQ",
+    "name": "Invesco QQQ Trust, Series 1",
+    "trust_cik": "0001067839",
+    "series_id": null
+  },
+  "sp400": {
+    "index": "sp400",
+    "ticker": "IJH",
+    "name": "iShares Core S&P Mid-Cap ETF",
+    "trust_cik": "0001100663",
+    "series_id": "S000004307"
+  },
+  "sp500": {
+    "index": "sp500",
+    "ticker": "IVV",
+    "name": "iShares Core S&P 500 ETF",
+    "trust_cik": "0001100663",
+    "series_id": "S000004310"
+  },
+  "sp600": {
+    "index": "sp600",
+    "ticker": "IJR",
+    "name": "iShares Core S&P Small-Cap ETF",
+    "trust_cik": "0001100663",
+    "series_id": "S000004313"
+  }
+}

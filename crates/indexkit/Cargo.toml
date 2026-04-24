@@ -1,0 +1,35 @@
+[package]
+name = "indexkit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Offline-first bundled-parquet index constituent library — S&P 500, Nasdaq-100, DJIA, S&P 400/600 from SEC EDGAR N-PORT filings"
+keywords = ["sec", "edgar", "nport", "index", "constituents"]
+categories = ["finance", "api-bindings"]
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+arrow.workspace = true
+parquet.workspace = true
+bytes.workspace = true
+futures.workspace = true
+sha2.workspace = true
+quick-xml.workspace = true
+directories = "6.0.0"
+tempfile = "3.27.0"
+
+[dev-dependencies]
+tokio = { version = "1.52.1", features = ["full", "test-util"] }
+tempfile = "3.27.0"
+wiremock = "0.6.5"
