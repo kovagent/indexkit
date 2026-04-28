@@ -99,6 +99,14 @@ pub fn entry_for(index: IndexId) -> CikEntry {
             // Single-series trust -- no series ID in N-PORT filings.
             series_id: None,
         },
+        IndexId::Rut => CikEntry {
+            index: "rut".into(),
+            ticker: "IWM".into(),
+            name: "iShares Russell 2000 ETF".into(),
+            trust_cik: "0001100663".into(),
+            // iShares Trust master CIK; IWM has its own series.
+            series_id: Some("S000004361".into()),
+        },
     }
 }
 
@@ -113,7 +121,7 @@ mod tests {
 
     #[test]
     fn all_entries_have_correct_count() {
-        assert_eq!(all_entries().len(), 5);
+        assert_eq!(all_entries().len(), 6);
     }
 
     #[test]

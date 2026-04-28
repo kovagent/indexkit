@@ -52,6 +52,9 @@ parquet = { version = "58.1.0", default-features = false, features = ["snap", "z
 # -- XML (N-PORT primary_doc.xml parsing) --
 quick-xml = "0.39.2"
 
+# -- XLSX (SSGA SPDR daily-holdings sheet parsing for DIA/MDY/etc.) --
+calamine = "0.34.0"
+
 # -- CLI --
 clap = { version = "4.6.1", features = ["derive", "env"] }
 
