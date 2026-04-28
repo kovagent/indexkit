@@ -66,6 +66,11 @@ pub fn sponsor_url(index: IndexId) -> Option<(DataSource, &'static str, &'static
             "DIA",
             "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-dia.xlsx",
         )),
+        IndexId::Rut => Some((
+            DataSource::IsharesCdn,
+            "IWM",
+            "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund",
+        )),
     }
 }
 
@@ -389,6 +394,173 @@ fn parse_csv_row(line: &str) -> Vec<String> {
     out
 }
 
+/// Parse a State Street SPDR daily-holdings XLSX into [`Constituent`]
+/// rows. Used for DIA (Dow Jones), MDY (Mid-Cap 400 backup), SPY
+/// (S&P 500 backup), etc. State Street ships these as binary `.xlsx`
+/// rather than CSV, so we rely on `calamine` to extract the cells.
+///
+/// Sheet layout (verified against `holdings-daily-us-en-dia.xlsx`):
+/// - Row 1: fund name + "Daily" banner
+/// - Row 2: empty
+/// - Row 3: "Fund Name" / "DIA" or fund details
+/// - Row 4: "As of MMM DD, YYYY" preamble carrying the as-of date
+/// - Row 5: header row -- columns include `Ticker`, `Name`,
+///   `Shares Held`, `Weight`, `Sector`, `Asset Class`
+/// - Rows 6+: equity holdings; the sheet may include sub-totals,
+///   cash rows, and "USD" pseudo-tickers that the equity filter drops
+///
+/// Numeric cells on the sheet sometimes arrive as strings with thousand
+/// separators (`"1,234.56"`); the parser strips commas before parsing.
+/// Empty/zero shares rows are kept (they appear when a name is being
+/// removed end-of-day) so the diff layer can detect membership exits.
+pub fn parse_spdr_xlsx(bytes: &[u8], as_of_fallback: NaiveDate) -> Result<Vec<Constituent>> {
+    use calamine::{open_workbook_from_rs, Data, Reader, Xlsx};
+    use std::io::Cursor;
+
+    let cursor = Cursor::new(bytes.to_vec());
+    let mut wb: Xlsx<_> =
+        open_workbook_from_rs(cursor).map_err(|e| Error::Other(format!("xlsx open: {e}")))?;
+
+    let sheet_names = wb.sheet_names();
+    let first = sheet_names
+        .first()
+        .ok_or_else(|| Error::Other("xlsx has no sheets".into()))?
+        .clone();
+    let range = wb
+        .worksheet_range(&first)
+        .map_err(|e| Error::Other(format!("xlsx worksheet '{first}': {e}")))?;
+
+    // Locate header row -- the row that contains a "Ticker" cell. SSGA
+    // pads the preamble with a variable number of rows depending on the
+    // fund (typically rows 1..=4), so scanning for the header is more
+    // robust than hardcoding row 5.
+    let mut header_row_idx: Option<usize> = None;
+    let mut as_of_from_preamble: Option<NaiveDate> = None;
+    for (row_idx, row) in range.rows().enumerate().take(20) {
+        for cell in row {
+            if let Data::String(s) = cell {
+                let trimmed = s.trim();
+                if trimmed.eq_ignore_ascii_case("Ticker") {
+                    header_row_idx = Some(row_idx);
+                    break;
+                }
+                if let Some(rest) = trimmed.strip_prefix("As of ") {
+                    if let Ok(d) = NaiveDate::parse_from_str(rest.trim(), "%b %d, %Y")
+                        .or_else(|_| NaiveDate::parse_from_str(rest.trim(), "%B %d, %Y"))
+                        .or_else(|_| NaiveDate::parse_from_str(rest.trim(), "%d-%b-%Y"))
+                    {
+                        as_of_from_preamble = Some(d);
+                    }
+                }
+            }
+        }
+        if header_row_idx.is_some() {
+            break;
+        }
+    }
+    let header_row_idx = header_row_idx
+        .ok_or_else(|| Error::Other("SPDR xlsx: 'Ticker' header row not found".into()))?;
+    let as_of = as_of_from_preamble.unwrap_or(as_of_fallback);
+
+    // Map column header -> column index for the columns we care about.
+    let header_row = range
+        .rows()
+        .nth(header_row_idx)
+        .ok_or_else(|| Error::Other("xlsx header row missing".into()))?;
+    let mut col_ticker: Option<usize> = None;
+    let mut col_name: Option<usize> = None;
+    let mut col_shares: Option<usize> = None;
+    let mut col_weight: Option<usize> = None;
+    let mut col_asset: Option<usize> = None;
+    for (col_idx, cell) in header_row.iter().enumerate() {
+        if let Data::String(s) = cell {
+            match s.trim().to_ascii_lowercase().as_str() {
+                "ticker" => col_ticker = Some(col_idx),
+                "name" | "company" | "issuer name" => col_name = Some(col_idx),
+                "shares held" | "shares" | "quantity" => col_shares = Some(col_idx),
+                "weight" | "weight (%)" | "weighting" => col_weight = Some(col_idx),
+                "asset class" | "type" => col_asset = Some(col_idx),
+                _ => {}
+            }
+        }
+    }
+    let c_ticker =
+        col_ticker.ok_or_else(|| Error::Other("SPDR xlsx: Ticker column missing".into()))?;
+    let c_name = col_name.unwrap_or(c_ticker);
+    let c_shares =
+        col_shares.ok_or_else(|| Error::Other("SPDR xlsx: Shares column missing".into()))?;
+    let c_weight =
+        col_weight.ok_or_else(|| Error::Other("SPDR xlsx: Weight column missing".into()))?;
+
+    let mut out: Vec<Constituent> = Vec::new();
+    for (row_idx, row) in range.rows().enumerate().skip(header_row_idx + 1) {
+        let _ = row_idx;
+        let ticker = match row.get(c_ticker) {
+            Some(Data::String(s)) => s.trim().to_string(),
+            _ => continue,
+        };
+        if ticker.is_empty() || ticker == "-" {
+            continue;
+        }
+        // Skip non-equity sub-totals / cash placeholders. SPDR DIA
+        // currently lists "USD" with empty asset class; ignore it.
+        if ticker.eq_ignore_ascii_case("USD") || ticker.eq_ignore_ascii_case("CASH") {
+            continue;
+        }
+        if let Some(c) = col_asset {
+            if let Some(Data::String(asset)) = row.get(c) {
+                if !asset.eq_ignore_ascii_case("Equity")
+                    && !asset.is_empty()
+                    && !asset.eq_ignore_ascii_case("Common Stock")
+                {
+                    continue;
+                }
+            }
+        }
+        let name = match row.get(c_name) {
+            Some(Data::String(s)) => s.trim().to_string(),
+            _ => ticker.clone(),
+        };
+        let shares = cell_as_f64(row.get(c_shares)).unwrap_or(0.0);
+        let weight_pct = cell_as_f64(row.get(c_weight)).unwrap_or(0.0);
+        out.push(Constituent {
+            ticker: Some(ticker),
+            name,
+            // SSGA's daily XLSX does not stamp the per-row CUSIP on this
+            // sheet; downstream coalesce keys on `(identity, date)` and
+            // accepts ticker as the identity when CUSIP is empty.
+            cusip: String::new(),
+            lei: None,
+            shares,
+            market_value_usd: 0.0,
+            weight: weight_pct / 100.0,
+            issuer_cik: None,
+            sector: None,
+            as_of,
+            source: DataSource::SpdrCdn,
+        });
+    }
+    if out.is_empty() {
+        return Err(Error::Other(
+            "SPDR xlsx: no equity rows parsed (sheet shape changed?)".into(),
+        ));
+    }
+    Ok(out)
+}
+
+fn cell_as_f64(cell: Option<&calamine::Data>) -> Option<f64> {
+    use calamine::Data;
+    match cell? {
+        Data::Float(f) => Some(*f),
+        Data::Int(i) => Some(*i as f64),
+        Data::String(s) => {
+            let cleaned: String = s.chars().filter(|c| *c != ',' && *c != '%').collect();
+            cleaned.trim().parse().ok()
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,5 +629,75 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
             let url = sponsor_url(id);
             assert!(url.is_some(), "no sponsor url for {id}");
         }
+    }
+
+    #[test]
+    fn parse_spdr_xlsx_dia_sample() {
+        // Real SPDR DIA daily-holdings XLSX (~19 KB, 30 equity rows +
+        // ~3 cash/sub-total rows + preamble). Committed under
+        // crates/indexkit/tests/fixtures/.
+        let bytes = include_bytes!("../tests/fixtures/spdr_dia_sample.xlsx");
+        let fallback = NaiveDate::from_ymd_opt(2026, 4, 28).unwrap();
+        let rows = parse_spdr_xlsx(bytes, fallback).unwrap();
+        // DJIA has exactly 30 constituents.
+        assert_eq!(
+            rows.len(),
+            30,
+            "expected 30 equity rows, got {}",
+            rows.len()
+        );
+        for r in &rows {
+            assert!(r.ticker.as_deref().map(|t| !t.is_empty()).unwrap_or(false));
+            assert!(!r.name.is_empty());
+            assert!(matches!(r.source, DataSource::SpdrCdn));
+            // Weight is a fraction in [0, 1] not a percent.
+            assert!(
+                r.weight >= 0.0 && r.weight <= 1.0,
+                "weight out of range: {}",
+                r.weight
+            );
+        }
+        // Weights sum to ~1.0 (allow ±5% slack for cash drag).
+        let total: f64 = rows.iter().map(|r| r.weight).sum();
+        assert!(
+            total > 0.95 && total < 1.05,
+            "weight sum out of band: {total}"
+        );
+    }
+
+    #[test]
+    fn parse_spdr_xlsx_filters_cash_pseudo_tickers() {
+        // The DIA sample has a "USD" cash row in the trailing rows. The
+        // parser must drop it.
+        let bytes = include_bytes!("../tests/fixtures/spdr_dia_sample.xlsx");
+        let fallback = NaiveDate::from_ymd_opt(2026, 4, 28).unwrap();
+        let rows = parse_spdr_xlsx(bytes, fallback).unwrap();
+        assert!(
+            !rows.iter().any(|r| {
+                r.ticker
+                    .as_deref()
+                    .map(|t| t.eq_ignore_ascii_case("USD") || t.eq_ignore_ascii_case("CASH"))
+                    .unwrap_or(false)
+            }),
+            "USD/CASH pseudo-ticker leaked through filter"
+        );
+    }
+
+    #[test]
+    fn parse_spdr_xlsx_extracts_as_of_from_preamble() {
+        use chrono::Datelike;
+        // SSGA stamps "As of MMM DD, YYYY" in the preamble. Verify we
+        // pick it up rather than falling back to the caller-supplied
+        // date.
+        let bytes = include_bytes!("../tests/fixtures/spdr_dia_sample.xlsx");
+        // Use a clearly-wrong fallback so any hit on the fallback fails.
+        let fallback = NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
+        let rows = parse_spdr_xlsx(bytes, fallback).unwrap();
+        let first = rows.first().expect("non-empty");
+        assert!(
+            first.as_of.year() >= 2020,
+            "as_of should come from preamble, got {}",
+            first.as_of
+        );
     }
 }

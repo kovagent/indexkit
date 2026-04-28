@@ -30,7 +30,9 @@ use indexkit::github_mirror::{
 use indexkit::nport::holdings_to_constituents;
 use indexkit::parquet_io::{read_month, write_month};
 use indexkit::sec::SecClient;
-use indexkit::sponsor::{parse_invesco_csv, parse_ishares_csv, sponsor_url, SponsorClient};
+use indexkit::sponsor::{
+    parse_invesco_csv, parse_ishares_csv, parse_spdr_xlsx, sponsor_url, SponsorClient,
+};
 use indexkit::types::DataSource;
 use indexkit::wayback::WaybackClient;
 use indexkit::{Constituent, IndexId, YearMonth};
@@ -346,22 +348,19 @@ async fn fetch_sponsor_one(
     ym: YearMonth,
 ) -> Result<usize> {
     let (source, body) = client.fetch_today(idx).await?;
-    let text = std::str::from_utf8(&body)
-        .map_err(|e| anyhow::anyhow!("sponsor response not UTF-8: {e}"))?;
 
     let rows: Vec<Constituent> = match source {
-        DataSource::IsharesCdn => parse_ishares_csv(text, today, source.clone())?,
-        DataSource::InvescoCdn => parse_invesco_csv(text, today)?,
-        DataSource::SpdrCdn => {
-            // State Street publishes an XLSX; we attempt CSV first (their
-            // CSV endpoint exists for some products). If decoding fails,
-            // we cannot parse .xlsx in v1.0 -- this is a documented gap.
-            tracing::warn!(
-                "SPDR sponsor response is XLSX; CSV parser cannot read it. \
-                 Wayback backfill will still work for historical days."
-            );
-            return Err(anyhow::anyhow!("SPDR XLSX not parseable in v1.0"));
+        DataSource::IsharesCdn => {
+            let text = std::str::from_utf8(&body)
+                .map_err(|e| anyhow::anyhow!("iShares response not UTF-8: {e}"))?;
+            parse_ishares_csv(text, today, source.clone())?
         }
+        DataSource::InvescoCdn => {
+            let text = std::str::from_utf8(&body)
+                .map_err(|e| anyhow::anyhow!("Invesco response not UTF-8: {e}"))?;
+            parse_invesco_csv(text, today)?
+        }
+        DataSource::SpdrCdn => parse_spdr_xlsx(&body, today)?,
         _ => return Err(anyhow::anyhow!("unexpected source {source:?}")),
     };
     if rows.is_empty() {
@@ -426,17 +425,32 @@ async fn cmd_wayback_backfill(
                     continue;
                 }
             };
-            let text = match std::str::from_utf8(&body) {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
             let tag = DataSource::Wayback(m.timestamp[..8].to_string());
             let rows = match source {
-                DataSource::IsharesCdn => match parse_ishares_csv(text, d, tag) {
-                    Ok(r) => r,
-                    Err(_) => continue,
-                },
-                DataSource::InvescoCdn => match parse_invesco_csv(text, d) {
+                DataSource::IsharesCdn => {
+                    let Ok(text) = std::str::from_utf8(&body) else {
+                        continue;
+                    };
+                    match parse_ishares_csv(text, d, tag) {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    }
+                }
+                DataSource::InvescoCdn => {
+                    let Ok(text) = std::str::from_utf8(&body) else {
+                        continue;
+                    };
+                    match parse_invesco_csv(text, d) {
+                        Ok(mut r) => {
+                            for row in &mut r {
+                                row.source = DataSource::Wayback(m.timestamp[..8].to_string());
+                            }
+                            r
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                DataSource::SpdrCdn => match parse_spdr_xlsx(&body, d) {
                     Ok(mut r) => {
                         for row in &mut r {
                             row.source = DataSource::Wayback(m.timestamp[..8].to_string());
@@ -445,11 +459,6 @@ async fn cmd_wayback_backfill(
                     }
                     Err(_) => continue,
                 },
-                DataSource::SpdrCdn => {
-                    // Wayback snapshots of SPDR .xlsx are not parseable with
-                    // the CSV parser. Skip.
-                    continue;
-                }
                 _ => continue,
             };
             if !rows.is_empty() {

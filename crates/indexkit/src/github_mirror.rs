@@ -87,7 +87,10 @@ pub fn github_yfiua_index_code(id: IndexId) -> Option<&'static str> {
         IndexId::Sp500 => Some("sp500"),
         IndexId::Ndx => Some("nasdaq100"),
         IndexId::Dji => Some("dowjones"),
-        IndexId::Sp400 | IndexId::Sp600 => None,
+        // yfiua does not currently maintain S&P 400/600 or Russell 2000
+        // ticker lists; the OSS-mirror tier returns None for these and
+        // the engine falls back to N-PORT / sponsor CDN sources.
+        IndexId::Sp400 | IndexId::Sp600 | IndexId::Rut => None,
     }
 }
 

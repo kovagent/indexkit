@@ -7,6 +7,29 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `parse_spdr_xlsx` parser for State Street SPDR daily-holdings XLSX
+  (DIA / MDY / SPY etc.) using `calamine`. Strips the preamble,
+  locates the `Ticker` header dynamically, filters cash and sub-total
+  rows, and parses the `As of MMM DD, YYYY` stamp from the preamble.
+  Three unit tests against a committed real-DIA fixture
+  (`crates/indexkit/tests/fixtures/spdr_dia_sample.xlsx`).
+- `IndexId::Rut` (Russell 2000) wired through `IndexId::ALL`,
+  `from_str_id`, `as_str`, `cik::entry_for` (iShares Trust CIK
+  0001100663, series S000004361) and `sponsor_url` (IWM via the
+  iShares CSV CDN).
+
+### Changed
+
+- `cli::cmd_daily_fetch` now invokes `parse_spdr_xlsx` for
+  `DataSource::SpdrCdn` instead of returning the
+  `"SPDR XLSX not parseable in v1.0"` error. DIA daily holdings are
+  fetched on every nightly run going forward.
+- `cli::cmd_wayback_backfill` now invokes `parse_spdr_xlsx` for
+  Wayback snapshots of SSGA `.xlsx` URLs, unblocking historical DIA
+  backfill from `web.archive.org`.
+
 ## [1.0.1] - 2026-04-24
 
 ### Added

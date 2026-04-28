@@ -307,7 +307,7 @@ pub struct DailySnapshot {
 
 /// Supported index identifiers.
 ///
-/// Strings: `"sp500"`, `"sp400"`, `"sp600"`, `"ndx"`, `"dji"`.
+/// Strings: `"sp500"`, `"sp400"`, `"sp600"`, `"ndx"`, `"dji"`, `"rut"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IndexId {
@@ -321,16 +321,19 @@ pub enum IndexId {
     Ndx,
     /// Dow Jones Industrial Average (via DIA).
     Dji,
+    /// Russell 2000 (via IWM -- iShares Russell 2000 ETF).
+    Rut,
 }
 
 impl IndexId {
-    /// All five indices.
-    pub const ALL: [IndexId; 5] = [
+    /// All six indices.
+    pub const ALL: [IndexId; 6] = [
         IndexId::Sp500,
         IndexId::Sp400,
         IndexId::Sp600,
         IndexId::Ndx,
         IndexId::Dji,
+        IndexId::Rut,
     ];
 
     /// Parse from short string id.
@@ -341,6 +344,7 @@ impl IndexId {
             "sp600" => Some(IndexId::Sp600),
             "ndx" | "nasdaq100" | "nasdaq-100" => Some(IndexId::Ndx),
             "dji" | "djia" | "dow" => Some(IndexId::Dji),
+            "rut" | "russell2000" | "russell-2000" => Some(IndexId::Rut),
             _ => None,
         }
     }
@@ -353,6 +357,7 @@ impl IndexId {
             IndexId::Sp600 => "sp600",
             IndexId::Ndx => "ndx",
             IndexId::Dji => "dji",
+            IndexId::Rut => "rut",
         }
     }
 }
