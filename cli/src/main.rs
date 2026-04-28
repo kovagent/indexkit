@@ -31,7 +31,7 @@ use indexkit::nport::holdings_to_constituents;
 use indexkit::parquet_io::{read_month, write_month};
 use indexkit::sec::SecClient;
 use indexkit::sponsor::{
-    parse_invesco_csv, parse_ishares_csv, parse_spdr_xlsx, sponsor_url, SponsorClient,
+    parse_invesco_csv, parse_ishares_csv, parse_spdr_xlsx, sponsor_urls, SponsorClient,
 };
 use indexkit::types::DataSource;
 use indexkit::wayback::WaybackClient;
@@ -398,49 +398,62 @@ async fn cmd_wayback_backfill(
     let to_yyyymmdd = to_nd.format("%Y%m%d").to_string();
 
     for idx in indices {
-        let Some((source, _ticker, url)) = sponsor_url(idx) else {
+        let endpoints = sponsor_urls(idx);
+        if endpoints.is_empty() {
             continue;
-        };
-        println!(
-            "{idx}: listing Wayback snapshots {} -> {} for {}",
-            from_yyyymmdd, to_yyyymmdd, url
-        );
-        let matches = match wb.list(url, &from_yyyymmdd, &to_yyyymmdd).await {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(%idx, "CDX fetch failed: {e}");
-                continue;
-            }
-        };
-        println!("{idx}: {} snapshots found", matches.len());
+        }
 
         let mut by_month: BTreeMap<YearMonth, Vec<Constituent>> = BTreeMap::new();
-        for m in matches {
-            let Some(d) = m.date() else { continue };
-            let ym = YearMonth::new(d.year(), d.month()).unwrap();
-            let body = match wb.fetch(&m).await {
-                Ok(b) => b,
+        for (source, ticker, url) in endpoints {
+            println!(
+                "{idx}/{ticker}: listing Wayback snapshots {} -> {} for {}",
+                from_yyyymmdd, to_yyyymmdd, url
+            );
+            let matches = match wb.list(url, &from_yyyymmdd, &to_yyyymmdd).await {
+                Ok(m) => m,
                 Err(e) => {
-                    tracing::debug!("skip snapshot {}: {e}", m.snapshot_url());
+                    tracing::warn!(%idx, %ticker, "CDX fetch failed: {e}");
                     continue;
                 }
             };
-            let tag = DataSource::Wayback(m.timestamp[..8].to_string());
-            let rows = match source {
-                DataSource::IsharesCdn => {
-                    let Ok(text) = std::str::from_utf8(&body) else {
+            println!("{idx}/{ticker}: {} snapshots found", matches.len());
+
+            for m in matches {
+                let Some(d) = m.date() else { continue };
+                let ym = YearMonth::new(d.year(), d.month()).unwrap();
+                let body = match wb.fetch(&m).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::debug!("skip snapshot {}: {e}", m.snapshot_url());
                         continue;
-                    };
-                    match parse_ishares_csv(text, d, tag) {
-                        Ok(r) => r,
-                        Err(_) => continue,
                     }
-                }
-                DataSource::InvescoCdn => {
-                    let Ok(text) = std::str::from_utf8(&body) else {
-                        continue;
-                    };
-                    match parse_invesco_csv(text, d) {
+                };
+                let tag = DataSource::Wayback(m.timestamp[..8].to_string());
+                let rows = match source {
+                    DataSource::IsharesCdn => {
+                        let Ok(text) = std::str::from_utf8(&body) else {
+                            continue;
+                        };
+                        match parse_ishares_csv(text, d, tag) {
+                            Ok(r) => r,
+                            Err(_) => continue,
+                        }
+                    }
+                    DataSource::InvescoCdn => {
+                        let Ok(text) = std::str::from_utf8(&body) else {
+                            continue;
+                        };
+                        match parse_invesco_csv(text, d) {
+                            Ok(mut r) => {
+                                for row in &mut r {
+                                    row.source = DataSource::Wayback(m.timestamp[..8].to_string());
+                                }
+                                r
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                    DataSource::SpdrCdn => match parse_spdr_xlsx(&body, d) {
                         Ok(mut r) => {
                             for row in &mut r {
                                 row.source = DataSource::Wayback(m.timestamp[..8].to_string());
@@ -448,25 +461,16 @@ async fn cmd_wayback_backfill(
                             r
                         }
                         Err(_) => continue,
-                    }
+                    },
+                    _ => continue,
+                };
+                if !rows.is_empty() {
+                    by_month.entry(ym).or_default().extend(rows);
                 }
-                DataSource::SpdrCdn => match parse_spdr_xlsx(&body, d) {
-                    Ok(mut r) => {
-                        for row in &mut r {
-                            row.source = DataSource::Wayback(m.timestamp[..8].to_string());
-                        }
-                        r
-                    }
-                    Err(_) => continue,
-                },
-                _ => continue,
-            };
-            if !rows.is_empty() {
-                by_month.entry(ym).or_default().extend(rows);
             }
         }
 
-        // Merge per-month.
+        // Merge per-month across all endpoints.
         for (ym, rows) in by_month {
             let old = existing_rows(data_dir, idx.as_str(), ym);
             let merged = coalesce(vec![old, rows]);

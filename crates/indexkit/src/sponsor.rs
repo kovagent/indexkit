@@ -34,44 +34,95 @@ use std::time::Duration;
 /// mistaken for a malicious bot.
 pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/userFRM/indexkit)";
 
-/// URL for the live sponsor-CDN holdings file of an ETF proxy.
+/// Ordered list of sponsor-CDN endpoints for an ETF proxy index, ranked by
+/// AUM (primary first, backups follow). [`SponsorClient::fetch_today`] walks
+/// the list and returns the first successful 200, falling back to the next
+/// entry on 4xx/5xx/network failure.
 ///
-/// Returns `None` for indices where we do not have a sponsor CDN endpoint
-/// (all five are supported in v1.0 but the list is provided for forward
-/// compatibility).
-pub fn sponsor_url(index: IndexId) -> Option<(DataSource, &'static str, &'static str)> {
+/// AUM ranking is approximate (late-2025 / early-2026 figures) and prefers
+/// data-source robustness as a tie-breaker (clean XLSX/CSV endpoints over
+/// JS-rendered HTML pages). VOO outranks SPY by AUM but is omitted because
+/// Vanguard's holdings page has no clean machine-readable endpoint at the
+/// time of writing.
+///
+/// | Index | Primary             | Backup                         |
+/// |-------|---------------------|--------------------------------|
+/// | SP500 | SPY (SSGA SPDR XLSX) | IVV (iShares CSV)             |
+/// | SP400 | IJH (iShares CSV)   | MDY (SSGA SPDR XLSX)           |
+/// | SP600 | IJR (iShares CSV)   | SLY (SSGA SPDR XLSX)           |
+/// | NDX   | QQQ (Invesco JSON)  | QQQM (Invesco JSON, same Trust) |
+/// | DJIA  | DIA (SSGA SPDR XLSX) | (none — no comparable second)  |
+/// | RUT   | IWM (iShares CSV)   | (none — VTWO needs JS scraper) |
+pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static str)> {
     match index {
-        IndexId::Sp500 => Some((
-            DataSource::IsharesCdn,
-            "IVV",
-            "https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund",
-        )),
-        IndexId::Sp400 => Some((
-            DataSource::IsharesCdn,
-            "IJH",
-            "https://www.ishares.com/us/products/239763/ishares-core-sp-midcap-etf/1467271812596.ajax?fileType=csv&fileName=IJH_holdings&dataType=fund",
-        )),
-        IndexId::Sp600 => Some((
-            DataSource::IsharesCdn,
-            "IJR",
-            "https://www.ishares.com/us/products/239774/ishares-core-sp-smallcap-etf/1467271812596.ajax?fileType=csv&fileName=IJR_holdings&dataType=fund",
-        )),
-        IndexId::Ndx => Some((
-            DataSource::InvescoCdn,
-            "QQQ",
-            "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?audienceType=Investor&action=download&ticker=QQQ",
-        )),
-        IndexId::Dji => Some((
+        IndexId::Sp500 => vec![
+            (
+                DataSource::SpdrCdn,
+                "SPY",
+                "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-spy.xlsx",
+            ),
+            (
+                DataSource::IsharesCdn,
+                "IVV",
+                "https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund",
+            ),
+        ],
+        IndexId::Sp400 => vec![
+            (
+                DataSource::IsharesCdn,
+                "IJH",
+                "https://www.ishares.com/us/products/239763/ishares-core-sp-midcap-etf/1467271812596.ajax?fileType=csv&fileName=IJH_holdings&dataType=fund",
+            ),
+            (
+                DataSource::SpdrCdn,
+                "MDY",
+                "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-mdy.xlsx",
+            ),
+        ],
+        IndexId::Sp600 => vec![
+            (
+                DataSource::IsharesCdn,
+                "IJR",
+                "https://www.ishares.com/us/products/239774/ishares-core-sp-smallcap-etf/1467271812596.ajax?fileType=csv&fileName=IJR_holdings&dataType=fund",
+            ),
+            (
+                DataSource::SpdrCdn,
+                "SLY",
+                "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-sly.xlsx",
+            ),
+        ],
+        IndexId::Ndx => vec![
+            (
+                DataSource::InvescoCdn,
+                "QQQ",
+                "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?audienceType=Investor&action=download&ticker=QQQ",
+            ),
+            (
+                DataSource::InvescoCdn,
+                "QQQM",
+                "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?audienceType=Investor&action=download&ticker=QQQM",
+            ),
+        ],
+        IndexId::Dji => vec![(
             DataSource::SpdrCdn,
             "DIA",
             "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-dia.xlsx",
-        )),
-        IndexId::Rut => Some((
+        )],
+        IndexId::Rut => vec![(
             DataSource::IsharesCdn,
             "IWM",
             "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund",
-        )),
+        )],
     }
+}
+
+/// Primary sponsor-CDN endpoint (first entry of [`sponsor_urls`]).
+///
+/// Kept for backwards compatibility with v1.0 callers that only need the
+/// AUM-ranked primary. New code should prefer [`sponsor_urls`] to enable
+/// backup-fallback.
+pub fn sponsor_url(index: IndexId) -> Option<(DataSource, &'static str, &'static str)> {
+    sponsor_urls(index).into_iter().next()
 }
 
 /// Client for sponsor-CDN holdings files.
@@ -92,20 +143,43 @@ impl SponsorClient {
 
     /// Fetch today's sponsor-CDN holdings as raw bytes.
     ///
-    /// Returns [`Error::Nport`] (repurposed) if the fetch fails or the
-    /// index has no sponsor URL.
+    /// Walks [`sponsor_urls`] in AUM order: tries the primary first, falls
+    /// back to each backup on network failure or non-2xx response. Returns
+    /// the source tag and bytes of the first successful endpoint.
+    ///
+    /// Errors only when every endpoint fails or the index has no sponsor
+    /// entries at all.
     pub async fn fetch_today(&self, index: IndexId) -> Result<(DataSource, bytes::Bytes)> {
-        let (src, _ticker, url) = sponsor_url(index)
-            .ok_or_else(|| Error::Other(format!("no sponsor url for {index}")))?;
-        let resp = self.http.get(url).send().await?;
-        if !resp.status().is_success() {
-            return Err(Error::Other(format!(
-                "sponsor fetch {url}: HTTP {} {}",
-                resp.status().as_u16(),
-                resp.status().canonical_reason().unwrap_or("")
-            )));
+        let endpoints = sponsor_urls(index);
+        if endpoints.is_empty() {
+            return Err(Error::Other(format!("no sponsor url for {index}")));
         }
-        Ok((src, resp.bytes().await?))
+        let mut last_err: Option<String> = None;
+        for (src, ticker, url) in endpoints {
+            match self.http.get(url).send().await {
+                Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                    Ok(body) => return Ok((src, body)),
+                    Err(e) => {
+                        last_err = Some(format!("{ticker}: body read failed: {e}"));
+                        tracing::warn!(%index, %ticker, "sponsor body read failed: {e}");
+                    }
+                },
+                Ok(resp) => {
+                    let code = resp.status().as_u16();
+                    let reason = resp.status().canonical_reason().unwrap_or("");
+                    last_err = Some(format!("{ticker}: HTTP {code} {reason}"));
+                    tracing::warn!(%index, %ticker, "sponsor fetch HTTP {code} {reason}, trying next");
+                }
+                Err(e) => {
+                    last_err = Some(format!("{ticker}: {e}"));
+                    tracing::warn!(%index, %ticker, "sponsor fetch network error: {e}, trying next");
+                }
+            }
+        }
+        Err(Error::Other(format!(
+            "all sponsor endpoints failed for {index}: {}",
+            last_err.unwrap_or_else(|| "unknown".into())
+        )))
     }
 }
 
@@ -628,6 +702,56 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
         for id in IndexId::ALL {
             let url = sponsor_url(id);
             assert!(url.is_some(), "no sponsor url for {id}");
+        }
+    }
+
+    #[test]
+    fn sponsor_urls_aum_ranked_primary() {
+        // SP500 primary must be SPY (SSGA SPDR XLSX) by AUM, with IVV backup.
+        let sp500 = sponsor_urls(IndexId::Sp500);
+        assert_eq!(sp500.len(), 2);
+        assert_eq!(sp500[0].0, DataSource::SpdrCdn);
+        assert_eq!(sp500[0].1, "SPY");
+        assert!(sp500[0].2.ends_with("holdings-daily-us-en-spy.xlsx"));
+        assert_eq!(sp500[1].0, DataSource::IsharesCdn);
+        assert_eq!(sp500[1].1, "IVV");
+
+        // SP400: IJH primary, MDY backup.
+        let sp400 = sponsor_urls(IndexId::Sp400);
+        assert_eq!(sp400.len(), 2);
+        assert_eq!(sp400[0].1, "IJH");
+        assert_eq!(sp400[1].1, "MDY");
+
+        // SP600: IJR primary, SLY backup.
+        let sp600 = sponsor_urls(IndexId::Sp600);
+        assert_eq!(sp600.len(), 2);
+        assert_eq!(sp600[0].1, "IJR");
+        assert_eq!(sp600[1].1, "SLY");
+
+        // NDX: QQQ primary, QQQM backup.
+        let ndx = sponsor_urls(IndexId::Ndx);
+        assert_eq!(ndx.len(), 2);
+        assert_eq!(ndx[0].1, "QQQ");
+        assert_eq!(ndx[1].1, "QQQM");
+
+        // DJIA: DIA only.
+        let dji = sponsor_urls(IndexId::Dji);
+        assert_eq!(dji.len(), 1);
+        assert_eq!(dji[0].1, "DIA");
+
+        // RUT: IWM only.
+        let rut = sponsor_urls(IndexId::Rut);
+        assert_eq!(rut.len(), 1);
+        assert_eq!(rut[0].1, "IWM");
+    }
+
+    #[test]
+    fn sponsor_url_returns_first_of_sponsor_urls() {
+        for id in IndexId::ALL {
+            let single = sponsor_url(id).unwrap();
+            let first = sponsor_urls(id).into_iter().next().unwrap();
+            assert_eq!(single.1, first.1);
+            assert_eq!(single.2, first.2);
         }
     }
 

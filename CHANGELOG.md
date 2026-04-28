@@ -19,6 +19,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `from_str_id`, `as_str`, `cik::entry_for` (iShares Trust CIK
   0001100663, series S000004361) and `sponsor_url` (IWM via the
   iShares CSV CDN).
+- `sponsor::sponsor_urls(IndexId) -> Vec<(DataSource, &'static str,
+  &'static str)>` returns AUM-ranked endpoints (primary first,
+  backups follow). Per-index ladder:
+  - SP500: SPY (SSGA SPDR XLSX) > IVV (iShares CSV)
+  - SP400: IJH (iShares CSV) > MDY (SSGA SPDR XLSX)
+  - SP600: IJR (iShares CSV) > SLY (SSGA SPDR XLSX)
+  - NDX: QQQ (Invesco JSON) > QQQM (Invesco JSON)
+  - DJIA: DIA only
+  - RUT: IWM only
+- `SponsorClient::fetch_today` now walks `sponsor_urls` and falls
+  back to each backup endpoint on 4xx / 5xx / network failure,
+  warn-logging the failed primary. Returns the source tag and bytes
+  of the first successful endpoint.
 
 ### Changed
 
@@ -26,9 +39,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `DataSource::SpdrCdn` instead of returning the
   `"SPDR XLSX not parseable in v1.0"` error. DIA daily holdings are
   fetched on every nightly run going forward.
-- `cli::cmd_wayback_backfill` now invokes `parse_spdr_xlsx` for
-  Wayback snapshots of SSGA `.xlsx` URLs, unblocking historical DIA
-  backfill from `web.archive.org`.
+- `cli::cmd_wayback_backfill` now iterates `sponsor_urls` per index
+  (not just the primary), unifying CDX + snapshot ingest across
+  primary and backup endpoints. Same parser dispatch (iShares CSV /
+  Invesco JSON / SPDR XLSX) per source tag.
+- **SP500 primary flipped from IVV to SPY.** SPY (~$650 B AUM,
+  SSGA SPDR XLSX) is larger than IVV (~$600 B, iShares CSV) and
+  uses the same parser path as DIA. IVV remains as the secondary
+  endpoint. VOO (Vanguard, ~$700 B) outranks both by AUM but is
+  deferred until a stable scraper for Vanguard's JS-rendered
+  holdings page exists.
+- `sponsor::sponsor_url` retained as a backwards-compatible thin
+  wrapper that returns the first (primary) entry of `sponsor_urls`.
 
 ## [1.0.1] - 2026-04-24
 
