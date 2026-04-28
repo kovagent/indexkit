@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn all_entries_have_correct_count() {
-        assert_eq!(all_entries().len(), 5);
+        assert_eq!(all_entries().len(), 6);
     }
 
     #[test]
