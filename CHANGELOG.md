@@ -25,7 +25,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - SP500: SPY (SSGA SPDR XLSX) > IVV (iShares CSV)
   - SP400: IJH (iShares CSV) > MDY (SSGA SPDR XLSX)
   - SP600: IJR (iShares CSV) > SLY (SSGA SPDR XLSX)
-  - NDX: QQQ (Invesco JSON) > QQQM (Invesco JSON)
+  - NDX: Nasdaq API (list-type) > Invesco DNG QQQ JSON > Invesco DNG QQQM JSON
   - DJIA: DIA only
   - RUT: IWM only
 - `SponsorClient::fetch_today` now walks `sponsor_urls` and falls
@@ -52,8 +52,35 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `sponsor::sponsor_url` retained as a backwards-compatible thin
   wrapper that returns the first (primary) entry of `sponsor_urls`.
 
+### Added (cont.)
+
+- `DataSource::NasdaqApi` variant tagged `nasdaq_api`, priority 5 (same
+  tier as the sponsor CDN). Powers the new daily primary for NDX.
+- `parse_nasdaq_ndx_json` parses Nasdaq's public `list-type` quote API
+  response (`api.nasdaq.com/api/quote/list-type/{listid}`) into
+  `Constituent` rows. Populates ticker, name (with `" Common Stock"` /
+  `" Common Shares"` suffix stripped), market cap, and market-cap-derived
+  weight. The endpoint is free, unauthenticated, and not subject to the
+  EU geo-block that affects `invesco.com` from European egress.
+  Three unit tests, including a regression test against a committed
+  live response (`crates/indexkit/tests/fixtures/nasdaq_ndx_sample.json`,
+  101 rows captured 2026-05-15).
+
 ### Fixed
 
+- **NDX daily ingest restored.** The legacy Invesco URL
+  (`invesco.com/us/financial-products/etfs/holdings/main/holdings/0?
+  action=download&ticker=QQQ`) was retired in 2026-Q1 -- it now returns
+  `HTTP 301` to the homepage, and `reqwest`'s redirect follower pulls
+  HTML that `parse_invesco_csv` cannot parse, so the loader bailed
+  silently every nightly run. NDX has therefore been stuck on the
+  monthly N-PORT baseline since then.
+  Fix: the NDX endpoint ladder now leads with Nasdaq's public list-type
+  API (free, official, no geo-block) and the Invesco backups have been
+  swapped onto Invesco's current DNG (Distribution Next-Gen) holdings
+  endpoint (`dng-api.invesco.com/cache/v1/.../holdings/fund`), which is
+  what `invesco.com/qqq-etf/en/about.html` itself uses to render the
+  all-holdings modal. (Closes #6.)
 - `parse_ishares_csv` now detects the header row when iShares emits the
   bare shape `Ticker,Name,Sector,Asset Class,...` (in addition to the
   legacy quoted shape `"Ticker","Name",...`). iShares dropped quoting

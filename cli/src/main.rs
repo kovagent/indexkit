@@ -31,7 +31,8 @@ use indexkit::nport::holdings_to_constituents;
 use indexkit::parquet_io::{read_month, write_month};
 use indexkit::sec::SecClient;
 use indexkit::sponsor::{
-    parse_invesco_csv, parse_ishares_csv, parse_spdr_xlsx, sponsor_urls, SponsorClient,
+    parse_invesco_csv, parse_ishares_csv, parse_nasdaq_ndx_json, parse_spdr_xlsx, sponsor_urls,
+    SponsorClient,
 };
 use indexkit::types::DataSource;
 use indexkit::wayback::WaybackClient;
@@ -361,6 +362,7 @@ async fn fetch_sponsor_one(
             parse_invesco_csv(text, today)?
         }
         DataSource::SpdrCdn => parse_spdr_xlsx(&body, today)?,
+        DataSource::NasdaqApi => parse_nasdaq_ndx_json(&body, today)?,
         _ => return Err(anyhow::anyhow!("unexpected source {source:?}")),
     };
     if rows.is_empty() {
@@ -454,6 +456,15 @@ async fn cmd_wayback_backfill(
                         }
                     }
                     DataSource::SpdrCdn => match parse_spdr_xlsx(&body, d) {
+                        Ok(mut r) => {
+                            for row in &mut r {
+                                row.source = DataSource::Wayback(m.timestamp[..8].to_string());
+                            }
+                            r
+                        }
+                        Err(_) => continue,
+                    },
+                    DataSource::NasdaqApi => match parse_nasdaq_ndx_json(&body, d) {
                         Ok(mut r) => {
                             for row in &mut r {
                                 row.source = DataSource::Wayback(m.timestamp[..8].to_string());
