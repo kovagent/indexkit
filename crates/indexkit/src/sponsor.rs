@@ -201,8 +201,14 @@ pub fn parse_ishares_csv(
     let mut lines = csv.lines().peekable();
     let mut header_idx: Option<Vec<String>> = None;
     for line in &mut lines {
-        // Heuristic: header row in iShares CSVs starts with "Ticker".
-        if line.starts_with('"') && line.contains("Ticker") && line.contains("Name") {
+        // Header detection: anchor on the unambiguous co-occurrence of
+        // `Ticker`, `Name`, and `Asset Class` -- these three strings appear
+        // together only on the header row. Tolerates both the legacy
+        // quoted shape (`"Ticker","Name",...`) and the bare shape
+        // (`Ticker,Name,...`) iShares began emitting in late-2025.
+        let trimmed = line.trim_start_matches('\u{feff}').trim_start();
+        let cell0 = trimmed.trim_start_matches('"');
+        if cell0.starts_with("Ticker") && line.contains("Name") && line.contains("Asset Class") {
             header_idx = Some(parse_csv_row(line));
             break;
         }
@@ -680,6 +686,36 @@ mod tests {
         assert_eq!(rows[0].cusip, "037833100");
         assert!((rows[0].weight - 0.0712).abs() < 1e-6);
         assert_eq!(rows[0].as_of, NaiveDate::from_ymd_opt(2024, 3, 15).unwrap());
+        assert_eq!(rows[0].source, DataSource::IsharesCdn);
+    }
+
+    #[test]
+    fn parse_ishares_csv_bare_ticker_header() {
+        // Late-2025 iShares shape: preamble + header row are NOT quoted.
+        // Reproduces the IJH / IJR / IWM / IVV live shape verified
+        // 2026-05-15 against the four live CDN endpoints.
+        let csv = "\u{feff}iShares Core S&P Mid-Cap ETF\n\
+Fund Holdings as of,\"May 14, 2026\"\n\
+Inception Date,\"May 22, 2000\"\n\
+Shares Outstanding,\"1,592,500,000.00\"\n\
+Stock,\"-\"\n\
+Bond,\"-\"\n\
+Cash,\"-\"\n\
+Other,\"-\"\n \n\
+Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Quantity,Price,Location,Exchange,Currency,FX Rate,Market Currency,Accrual Date,CUSIP,ISIN,SEDOL\n\
+\"AAPL\",\"APPLE INC\",\"IT\",\"Equity\",\"28900000000.00\",\"7.12\",\"28900000000.00\",\"158300000\",\"182.41\",\"US\",\"NASDAQ\",\"USD\",\"1.00\",\"USD\",\"-\",\"037833100\",\"US0378331005\",\"2046251\"\n\
+\"MSFT\",\"MICROSOFT CORP\",\"IT\",\"Equity\",\"19500000000.00\",\"4.81\",\"19500000000.00\",\"47300000\",\"412.31\",\"US\",\"NASDAQ\",\"USD\",\"1.00\",\"USD\",\"-\",\"594918104\",\"US5949181045\",\"2588173\"\n";
+        let rows = parse_ishares_csv(
+            csv,
+            NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+            DataSource::IsharesCdn,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2, "expected 2 rows, got {}", rows.len());
+        assert_eq!(rows[0].ticker.as_deref(), Some("AAPL"));
+        assert_eq!(rows[0].cusip, "037833100");
+        assert!((rows[0].weight - 0.0712).abs() < 1e-6);
+        assert_eq!(rows[0].as_of, NaiveDate::from_ymd_opt(2026, 5, 14).unwrap());
         assert_eq!(rows[0].source, DataSource::IsharesCdn);
     }
 

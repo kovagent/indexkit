@@ -52,6 +52,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `sponsor::sponsor_url` retained as a backwards-compatible thin
   wrapper that returns the first (primary) entry of `sponsor_urls`.
 
+### Fixed
+
+- `parse_ishares_csv` now detects the header row when iShares emits the
+  bare shape `Ticker,Name,Sector,Asset Class,...` (in addition to the
+  legacy quoted shape `"Ticker","Name",...`). iShares dropped quoting
+  from the daily-holdings CSV in late-2025, which caused IJH / IJR /
+  IWM / IVV to silently parse to zero rows in nightly cron runs since
+  then. Header detection now anchors on the co-occurrence of `Ticker`,
+  `Name`, and `Asset Class` rather than the leading double-quote.
+  New regression test `parse_ishares_csv_bare_ticker_header` covers
+  the new shape. Fixes SP400 / SP600 / RUT daily ingest. (Closes #5.)
+
 ## [1.0.1] - 2026-04-24
 
 ### Added
