@@ -31,6 +31,18 @@ pub enum DataSource {
     IsharesCdn,
     InvescoCdn,
     SpdrCdn,
+    /// Nasdaq's public list-type quote API
+    /// (`api.nasdaq.com/api/quote/list-type/{listid}`).
+    ///
+    /// Free, unauthenticated JSON endpoint that returns the official
+    /// constituent universe of a Nasdaq-published index. Used as the
+    /// daily primary for NDX since Invesco's old QQQ holdings URL was
+    /// retired in 2026-Q1.
+    ///
+    /// Payload provides ticker, company name, market cap, and last sale
+    /// price (no CUSIP / LEI / explicit weight). Weight is implicit in
+    /// market cap; downstream `cusip-resolver` enriches CUSIP.
+    NasdaqApi,
     /// Internet Archive's Wayback Machine. Snapshots of sponsor pages
     /// captured by `archive.org` on a specific date.
     ///
@@ -77,6 +89,7 @@ impl DataSource {
             DataSource::IsharesCdn => "ishares_cdn".into(),
             DataSource::InvescoCdn => "invesco_cdn".into(),
             DataSource::SpdrCdn => "spdr_cdn".into(),
+            DataSource::NasdaqApi => "nasdaq_api".into(),
             DataSource::Wayback(yyyymmdd) => format!("wayback_{yyyymmdd}"),
             DataSource::SecNport => "sec_nport".into(),
             DataSource::GithubFja05680 => "github_fja05680".into(),
@@ -91,6 +104,7 @@ impl DataSource {
             "ishares_cdn" => Some(DataSource::IsharesCdn),
             "invesco_cdn" => Some(DataSource::InvescoCdn),
             "spdr_cdn" => Some(DataSource::SpdrCdn),
+            "nasdaq_api" => Some(DataSource::NasdaqApi),
             "sec_nport" => Some(DataSource::SecNport),
             "github_fja05680" => Some(DataSource::GithubFja05680),
             "github_hanshof" => Some(DataSource::GithubHanshof),
@@ -109,7 +123,10 @@ impl DataSource {
     /// `(index, identity, date)` key during coalesce.
     pub fn priority(&self) -> u8 {
         match self {
-            DataSource::IsharesCdn | DataSource::InvescoCdn | DataSource::SpdrCdn => 5,
+            DataSource::IsharesCdn
+            | DataSource::InvescoCdn
+            | DataSource::SpdrCdn
+            | DataSource::NasdaqApi => 5,
             DataSource::GithubFja05680 => 4,
             DataSource::GithubYfiua { .. } => 3,
             DataSource::GithubHanshof => 3,
@@ -405,6 +422,7 @@ mod tests {
             DataSource::IsharesCdn,
             DataSource::InvescoCdn,
             DataSource::SpdrCdn,
+            DataSource::NasdaqApi,
             DataSource::SecNport,
             DataSource::GithubFja05680,
             DataSource::GithubHanshof,
@@ -424,6 +442,7 @@ mod tests {
         assert_eq!(DataSource::IsharesCdn.priority(), 5);
         assert_eq!(DataSource::InvescoCdn.priority(), 5);
         assert_eq!(DataSource::SpdrCdn.priority(), 5);
+        assert_eq!(DataSource::NasdaqApi.priority(), 5);
         assert_eq!(DataSource::GithubFja05680.priority(), 4);
         assert_eq!(
             DataSource::GithubYfiua {

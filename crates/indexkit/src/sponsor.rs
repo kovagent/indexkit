@@ -45,14 +45,14 @@ pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/userFRM/
 /// Vanguard's holdings page has no clean machine-readable endpoint at the
 /// time of writing.
 ///
-/// | Index | Primary             | Backup                         |
-/// |-------|---------------------|--------------------------------|
-/// | SP500 | SPY (SSGA SPDR XLSX) | IVV (iShares CSV)             |
-/// | SP400 | IJH (iShares CSV)   | MDY (SSGA SPDR XLSX)           |
-/// | SP600 | IJR (iShares CSV)   | SLY (SSGA SPDR XLSX)           |
-/// | NDX   | QQQ (Invesco JSON)  | QQQM (Invesco JSON, same Trust) |
-/// | DJIA  | DIA (SSGA SPDR XLSX) | (none — no comparable second)  |
-/// | RUT   | IWM (iShares CSV)   | (none — VTWO needs JS scraper) |
+/// | Index | Primary                 | Backup(s)                                       |
+/// |-------|-------------------------|--------------------------------------------------|
+/// | SP500 | SPY (SSGA SPDR XLSX)    | IVV (iShares CSV)                               |
+/// | SP400 | IJH (iShares CSV)       | MDY (SSGA SPDR XLSX)                            |
+/// | SP600 | IJR (iShares CSV)       | SLY (SSGA SPDR XLSX)                            |
+/// | NDX   | Nasdaq API (list-type)  | Invesco DNG QQQ JSON, then Invesco DNG QQQM JSON |
+/// | DJIA  | DIA (SSGA SPDR XLSX)    | (none — no comparable second)                   |
+/// | RUT   | IWM (iShares CSV)       | (none — VTWO needs JS scraper)                  |
 pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static str)> {
     match index {
         IndexId::Sp500 => vec![
@@ -92,15 +92,31 @@ pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static s
             ),
         ],
         IndexId::Ndx => vec![
+            // Nasdaq's own public list-type API -- official source of the
+            // NDX constituent universe, free, unauthenticated, no geo-block.
+            // Returns the full 100+ ticker universe with market cap and
+            // last sale price. Primary because the legacy Invesco
+            // download URL was retired in 2026-Q1 (HTTP 301 -> homepage).
+            (
+                DataSource::NasdaqApi,
+                "NDX",
+                "https://api.nasdaq.com/api/quote/list-type/nasdaq100",
+            ),
+            // Invesco DNG (Distribution Next-Gen) holdings JSON for QQQ
+            // -- the endpoint Invesco's own QQQ product page calls to
+            // render its all-holdings modal. Reachable from US egress;
+            // EU edge currently returns HTTP 406 (geo-block).
             (
                 DataSource::InvescoCdn,
                 "QQQ",
-                "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?audienceType=Investor&action=download&ticker=QQQ",
+                "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/QQQ/holdings/fund?idType=ticker&interval=daily&productType=ETF&loadType=initial",
             ),
+            // Same DNG endpoint for QQQM (Invesco Nasdaq-100 ETF, sister
+            // share-class, same underlying constituents).
             (
                 DataSource::InvescoCdn,
                 "QQQM",
-                "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?audienceType=Investor&action=download&ticker=QQQM",
+                "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/QQQM/holdings/fund?idType=ticker&interval=daily&productType=ETF&loadType=initial",
             ),
         ],
         IndexId::Dji => vec![(
@@ -427,6 +443,134 @@ fn extract_ishares_date(line: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s[..end].trim(), "%b %d, %Y").ok()
 }
 
+/// Parse Nasdaq's public list-type quote API response into
+/// [`Constituent`] rows.
+///
+/// Endpoint: `https://api.nasdaq.com/api/quote/list-type/nasdaq100`
+/// (or any other Nasdaq-published listid).
+///
+/// Response shape (verified 2026-05-15 against the live nasdaq100
+/// listid):
+///
+/// ```json
+/// {
+///   "data": {
+///     "totalrecords": 101,
+///     "date": "May 15, 2026 10:30 AM",
+///     "data": {
+///       "headers": { "symbol": "Symbol", "companyName": "Name", ... },
+///       "rows": [
+///         {
+///           "symbol": "AAPL",
+///           "companyName": "Apple Inc. Common Stock",
+///           "marketCap": "4,401,506,846,080",
+///           "lastSalePrice": "$299.66",
+///           ...
+///         }
+///       ]
+///     }
+///   }
+/// }
+/// ```
+///
+/// Per-row fields populated:
+/// - `ticker` = `symbol`
+/// - `name`   = `companyName` (with trailing " Common Stock" stripped)
+/// - `shares` = 0.0 (Nasdaq's list-type response does not expose
+///   shares-outstanding; downstream consumers can join against
+///   `companyfacts` for that)
+/// - `market_value_usd` = parsed `marketCap`
+/// - `weight` = market-cap weight within the universe (mcap / Σmcap)
+///
+/// CUSIP / LEI / sector are not provided by this endpoint; downstream
+/// `cusip-resolver` enriches them.
+pub fn parse_nasdaq_ndx_json(body: &[u8], as_of_fallback: NaiveDate) -> Result<Vec<Constituent>> {
+    let v: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|e| Error::Other(format!("nasdaq json parse: {e}")))?;
+    let as_of = v
+        .get("data")
+        .and_then(|d| d.get("date"))
+        .and_then(|s| s.as_str())
+        .and_then(parse_nasdaq_date)
+        .unwrap_or(as_of_fallback);
+
+    let rows = v
+        .get("data")
+        .and_then(|d| d.get("data"))
+        .and_then(|d| d.get("rows"))
+        .and_then(|r| r.as_array())
+        .ok_or_else(|| Error::Other("nasdaq json: missing data.data.rows[]".into()))?;
+
+    // First pass: collect (symbol, name, mcap) so we can compute weights.
+    let mut tmp: Vec<(String, String, f64)> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let symbol = row
+            .get("symbol")
+            .and_then(|s| s.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let Some(symbol) = symbol else { continue };
+        let name = row
+            .get("companyName")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .trim()
+            .trim_end_matches(" Common Stock")
+            .trim_end_matches(" Common Shares")
+            .to_string();
+        let mcap = row
+            .get("marketCap")
+            .and_then(|s| s.as_str())
+            .and_then(parse_number)
+            .unwrap_or(0.0);
+        tmp.push((symbol.to_string(), name, mcap));
+    }
+    if tmp.is_empty() {
+        return Err(Error::Other("nasdaq json: zero rows".into()));
+    }
+
+    let total_mcap: f64 = tmp.iter().map(|(_, _, m)| *m).sum();
+    let mut out = Vec::with_capacity(tmp.len());
+    for (symbol, name, mcap) in tmp {
+        let weight = if total_mcap > 0.0 {
+            mcap / total_mcap
+        } else {
+            0.0
+        };
+        out.push(Constituent {
+            ticker: Some(symbol.clone()),
+            name: if name.is_empty() { symbol } else { name },
+            cusip: String::new(),
+            lei: None,
+            shares: 0.0,
+            market_value_usd: mcap,
+            weight,
+            issuer_cik: None,
+            sector: None,
+            as_of,
+            source: DataSource::NasdaqApi,
+        });
+    }
+    out.sort_by(|a, b| {
+        b.weight
+            .partial_cmp(&a.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(out)
+}
+
+/// Parse Nasdaq's `data.date` string (`"May 15, 2026 10:30 AM"`) into a
+/// [`NaiveDate`]. Returns `None` on any parse failure.
+fn parse_nasdaq_date(s: &str) -> Option<NaiveDate> {
+    // Strip any trailing time component -- keep only the date portion.
+    let head = s.split(" 1").next().unwrap_or(s);
+    let head = head.split(" 0").next().unwrap_or(head);
+    NaiveDate::parse_from_str(head.trim(), "%b %d, %Y")
+        .or_else(|_| NaiveDate::parse_from_str(s.trim(), "%b %d, %Y %I:%M %p"))
+        .or_else(|_| NaiveDate::parse_from_str(s.trim(), "%B %d, %Y"))
+        .ok()
+}
+
 fn parse_invesco_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.trim(), "%m/%d/%Y")
         .or_else(|_| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d"))
@@ -720,6 +864,86 @@ Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Quantity,P
     }
 
     #[test]
+    fn parse_nasdaq_ndx_sample() {
+        // Real Nasdaq list-type response captured 2026-05-15 against the
+        // live `nasdaq100` listid. Committed under
+        // crates/indexkit/tests/fixtures/.
+        let bytes = include_bytes!("../tests/fixtures/nasdaq_ndx_sample.json");
+        let fallback = NaiveDate::from_ymd_opt(2026, 5, 15).unwrap();
+        let rows = parse_nasdaq_ndx_json(bytes, fallback).unwrap();
+        // NDX has 100 members; Nasdaq's list-type response returns 101
+        // because a few names (e.g. GOOG/GOOGL) trade as two share
+        // classes that both count in the index.
+        assert!(
+            (100..=110).contains(&rows.len()),
+            "expected ~101 NDX rows, got {}",
+            rows.len()
+        );
+        // Weights must sum to ~1.0 (mcap / Σmcap).
+        let total_weight: f64 = rows.iter().map(|r| r.weight).sum();
+        assert!(
+            (total_weight - 1.0).abs() < 1e-6,
+            "weights should sum to 1.0, got {total_weight}"
+        );
+        // Every row has a ticker and a non-zero market cap.
+        for r in &rows {
+            assert!(r.ticker.as_deref().map(|t| !t.is_empty()).unwrap_or(false));
+            assert!(r.market_value_usd > 0.0);
+            assert!(matches!(r.source, DataSource::NasdaqApi));
+        }
+        // Sanity-check the top of the universe -- AAPL, MSFT, NVDA, GOOG,
+        // GOOGL are the largest names in NDX and should all be in the
+        // top 10 by market cap.
+        let top10: Vec<&str> = rows
+            .iter()
+            .take(10)
+            .filter_map(|r| r.ticker.as_deref())
+            .collect();
+        assert!(top10.contains(&"AAPL"), "AAPL not in top-10: {top10:?}");
+        assert!(top10.contains(&"MSFT"), "MSFT not in top-10: {top10:?}");
+        assert!(top10.contains(&"NVDA"), "NVDA not in top-10: {top10:?}");
+    }
+
+    #[test]
+    fn parse_nasdaq_ndx_json_rejects_empty() {
+        let err = parse_nasdaq_ndx_json(
+            br#"{"data":{"data":{"rows":[]}}}"#,
+            NaiveDate::from_ymd_opt(2026, 5, 15).unwrap(),
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn parse_nasdaq_ndx_strips_common_stock_suffix() {
+        let body = br#"{
+            "data": {
+                "date": "May 15, 2026 10:30 AM",
+                "data": {
+                    "headers": {},
+                    "rows": [
+                        {"symbol": "AAPL", "companyName": "Apple Inc. Common Stock", "marketCap": "1,000"},
+                        {"symbol": "MSFT", "companyName": "Microsoft Corp Common Shares", "marketCap": "1,000"}
+                    ]
+                }
+            }
+        }"#;
+        let rows =
+            parse_nasdaq_ndx_json(body, NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()).unwrap();
+        assert_eq!(rows.len(), 2);
+        let aapl = rows
+            .iter()
+            .find(|r| r.ticker.as_deref() == Some("AAPL"))
+            .unwrap();
+        assert_eq!(aapl.name, "Apple Inc.");
+        let msft = rows
+            .iter()
+            .find(|r| r.ticker.as_deref() == Some("MSFT"))
+            .unwrap();
+        assert_eq!(msft.name, "Microsoft Corp");
+        assert_eq!(aapl.as_of, NaiveDate::from_ymd_opt(2026, 5, 15).unwrap());
+    }
+
+    #[test]
     fn parse_invesco_csv_minimal() {
         let csv = r#"Fund Ticker,Security Identifier,Holdings Ticker,Name,Weight,Shares/Par Value,Market Value,Date
 QQQ,037833100,AAPL,APPLE INC,7.12,158300000,28900000000,03/15/2024
@@ -764,11 +988,18 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
         assert_eq!(sp600[0].1, "IJR");
         assert_eq!(sp600[1].1, "SLY");
 
-        // NDX: QQQ primary, QQQM backup.
+        // NDX: Nasdaq's public list-type API is primary (official, free,
+        // no geo-block). Invesco DNG endpoints for QQQ + QQQM follow as
+        // backups.
         let ndx = sponsor_urls(IndexId::Ndx);
-        assert_eq!(ndx.len(), 2);
-        assert_eq!(ndx[0].1, "QQQ");
-        assert_eq!(ndx[1].1, "QQQM");
+        assert_eq!(ndx.len(), 3);
+        assert_eq!(ndx[0].0, DataSource::NasdaqApi);
+        assert_eq!(ndx[0].1, "NDX");
+        assert!(ndx[0].2.contains("api.nasdaq.com"));
+        assert_eq!(ndx[1].0, DataSource::InvescoCdn);
+        assert_eq!(ndx[1].1, "QQQ");
+        assert!(ndx[1].2.contains("dng-api.invesco.com"));
+        assert_eq!(ndx[2].1, "QQQM");
 
         // DJIA: DIA only.
         let dji = sponsor_urls(IndexId::Dji);
