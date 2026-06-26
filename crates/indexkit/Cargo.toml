@@ -5,9 +5,17 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Offline-first bundled-parquet index constituent library — S&P 500, Nasdaq-100, DJIA, S&P 400/600 from SEC EDGAR N-PORT filings"
-keywords = ["sec", "edgar", "nport", "index", "constituents"]
+description = "Daily index constituents for the S&P 500, S&P 400/600, Nasdaq-100 and Dow Jones, for Rust"
+keywords = ["index", "constituents", "sp500", "nasdaq100", "finance"]
 categories = ["finance", "api-bindings"]
+readme = "../../README.crates.md"
+exclude = [
+    "/data",
+    "/docs",
+    "/.github",
+    "/cli",
+    "tests/fixtures",
+]
 
 [dependencies]
 anyhow.workspace = true
@@ -27,10 +35,10 @@ futures.workspace = true
 sha2.workspace = true
 quick-xml.workspace = true
 calamine.workspace = true
-directories = "6.0.0"
-tempfile = "3.27.0"
+directories = "6"
+tempfile = "3"
 
 [dev-dependencies]
-tokio = { version = "1.52.1", features = ["full", "test-util"] }
-tempfile = "3.27.0"
-wiremock = "0.6.5"
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+wiremock = "0.6"

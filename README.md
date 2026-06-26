@@ -2,31 +2,23 @@
 
 Index constituent service for Rust -- **daily** holdings of the S&P 500,
 S&P MidCap 400, S&P SmallCap 600, Nasdaq-100, and Dow Jones Industrial
-Average. Six layered sources by priority (live sponsor CDN > OSS GitHub
-mirrors > Internet Archive Wayback Machine > SEC EDGAR N-PORT). Served
-from bundled parquet with runtime GitHub fetch and local cache. No API
-keys. Offline after first query.
+Average. Served from bundled parquet with runtime fetch and local cache.
+No API keys. Offline after first query.
 
 ## Sources
 
-| Priority | Source | License | Coverage | Granularity | Fields |
-|---|---|---|---|---|---|
-| 5 (highest) | Sponsor CDN (iShares / Invesco / SPDR) | public / ToS | forward-going | daily | full |
-| 4 | [fja05680/sp500] | MIT | 1996-01-02 - 2026 | daily change-rows | tickers only |
-| 3 | [yfiua/index-constituents] | Apache-2.0 | ~2018 - present | monthly | tickers only |
-| 3 | [hanshof/sp500_constituents] | MIT | 1996 - present | daily change-rows | tickers only |
-| 2 | Internet Archive Wayback Machine | fair-use | 2019-11 - present, patchy | daily when captured | varies |
-| 1 (baseline) | SEC EDGAR N-PORT | public domain | 2019-11 - present | monthly | full (no ticker) |
+Constituents are assembled from public regulatory filings, sponsor-published
+holdings, and permissively-licensed open datasets (credited under
+[Attribution](#attribution)). Every row is stamped with a `source` column
+(see [`DataSource`](https://docs.rs/indexkit/latest/indexkit/types/enum.DataSource.html))
+so callers can filter by confidence. When rows from multiple sources cover
+the same `(identity, date)` key, the coalescer keeps a single best row;
+`identity` is CUSIP where present, falling back to ticker for ticker-only
+sources.
 
 [fja05680/sp500]: https://github.com/fja05680/sp500
 [yfiua/index-constituents]: https://github.com/yfiua/index-constituents
 [hanshof/sp500_constituents]: https://github.com/hanshof/sp500_constituents
-
-Every row is stamped with a `source` column (see [`DataSource`](https://docs.rs/indexkit/latest/indexkit/types/enum.DataSource.html))
-so callers can filter by confidence. When rows from multiple sources
-cover the same `(identity, date)` key, the higher-priority source wins
-during coalesce; `identity` is CUSIP where present, falling back to
-ticker for the GitHub mirror sources (which are ticker-only).
 
 ### Field coverage by source
 
@@ -258,9 +250,8 @@ pub struct Constituent {
 | SEC N-PORT (IVV, IJH, IJR, QQQ, DIA) | 2019-11 - present | T+90d monthly |
 
 Parquet files live in `data/{index}/{index}-YYYY-MM.parquet`. Each month
-file contains rows from every available source; the priority coalescer
-(`Cdn > Wayback > Nport`) ensures only the best row per `(cusip, as_of)`
-is kept.
+file contains rows from every available source; the coalescer keeps only a
+single best row per `(cusip, as_of)`.
 
 Data is updated by three GitHub Actions workflows:
 
