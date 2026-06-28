@@ -1,14 +1,10 @@
 //! Merge rows from multiple sources into a single coherent snapshot.
 //!
-//! # Priority
+//! # Precedence
 //!
-//! [`DataSource::priority`][crate::types::DataSource::priority] ranks sources:
-//!
-//! - `5` -- live sponsor CDN (`IsharesCdn`, `InvescoCdn`, `SpdrCdn`) -- full fields, daily
-//! - `4` -- `GithubFja05680` -- ticker only, daily, 1996+
-//! - `3` -- `GithubYfiua` / `GithubHanshof` -- ticker only, monthly / daily
-//! - `2` -- Wayback Machine snapshots -- full fields where available, sparse
-//! - `1` -- SEC N-PORT baseline -- full fields (no ticker), monthly
+//! When several sources cover one row, the row from the source with the
+//! higher [`DataSource::priority`][crate::types::DataSource::priority] is
+//! kept. Full-field rows outrank ticker-only rows.
 //!
 //! # Identity key
 //!

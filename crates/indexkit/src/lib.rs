@@ -1,23 +1,14 @@
 //! `indexkit` -- index constituent service for Rust.
 //!
-//! Daily / monthly snapshots of the S&P 500, S&P MidCap 400, S&P SmallCap
+//! Daily and monthly snapshots of the S&P 500, S&P MidCap 400, S&P SmallCap
 //! 600, Nasdaq-100, and Dow Jones Industrial Average, served from bundled
-//! parquet files with runtime GitHub fetch and local cache. No API keys.
-//! Offline after the first successful fetch.
+//! parquet files with runtime fetch and local cache. No API keys. Offline
+//! after the first successful fetch.
 //!
-//! Data sources layer by priority (see [`types::DataSource`]):
-//! sponsor CDNs (iShares / Invesco / SPDR) > OSS GitHub mirrors
-//! ([fja05680/sp500], [yfiua/index-constituents],
-//! [hanshof/sp500_constituents]) > Internet Archive Wayback > SEC EDGAR
-//! N-PORT. The S&P 500 now has daily rows from 1996-01-02 onward via the
-//! GitHub mirrors; other indices still start 2019-11 via N-PORT (plus
-//! sponsor-CDN forward-going).
+//! Data is assembled from public regulatory filings and sponsor-published
+//! holdings. Every row carries its origin in [`types::DataSource`].
 //!
-//! [fja05680/sp500]: https://github.com/fja05680/sp500
-//! [yfiua/index-constituents]: https://github.com/yfiua/index-constituents
-//! [hanshof/sp500_constituents]: https://github.com/hanshof/sp500_constituents
-//!
-//! # Quick start -- one-off scripts
+//! # Quick start
 //!
 //! ```no_run
 //! use indexkit::{ym, IndexId};
@@ -31,30 +22,6 @@
 //!     println!("S&P 500 latest: {} holdings", sp500.len());
 //!     println!("Top: {} at {:.2}%", sp500[0].name, sp500[0].weight * 100.0);
 //!     println!("NDX Jan 2024: {} holdings", ndx.len());
-//!     Ok(())
-//! }
-//! ```
-//!
-//! # Client pattern -- connection pool + cache reuse
-//!
-//! ```no_run
-//! use indexkit::{Indexkit, ym, YearMonth};
-//!
-//! #[tokio::main]
-//! async fn main() -> indexkit::Result<()> {
-//!     let client = Indexkit::new();   // infallible, no ?
-//!
-//!     // Any month form works -- no chrono import needed
-//!     let a = client.sp500("2024-01").await?;
-//!     let b = client.sp500(202401u32).await?;
-//!     let c = client.sp500((2024i32, 1u32)).await?;
-//!     let d = client.sp500(ym!(2024, 1)).await?;
-//!     let e = client.sp500(YearMonth::new(2024, 1)?).await?;
-//!
-//!     // All equivalent
-//!     assert_eq!(a.len(), b.len());
-//!     assert_eq!(c.len(), d.len());
-//!     let _ = e;
 //!     Ok(())
 //! }
 //! ```
@@ -76,28 +43,20 @@
 //! | `INDEXKIT_CACHE_DIR` | Override `~/.cache/indexkit/` |
 //! | `INDEXKIT_MIRROR_URL` | CDN mirror fallback URL (default: jsDelivr) |
 //!
-//! # Field coverage per source
+//! # Field coverage
 //!
 //! Which columns a given [`Constituent`] carries depends on the row's
-//! [`DataSource`]. Sponsor-CDN / Wayback / N-PORT rows are full-field
-//! (weight, shares, market value, CUSIP). GitHub mirror rows
-//! ([`DataSource::GithubFja05680`], [`DataSource::GithubYfiua`],
-//! [`DataSource::GithubHanshof`]) are ticker-only: `weight` is
-//! `f64::NAN`, `cusip` is empty, `shares` / `market_value_usd` are `0.0`.
-//! Use [`Constituent::weight_opt`] for an `Option<f64>` accessor that
-//! returns `None` on NaN.
+//! [`DataSource`]. Some rows are full-field (weight, shares, market value,
+//! CUSIP); others are ticker-only, where `weight` is `f64::NAN`, `cusip` is
+//! empty, and `shares` / `market_value_usd` are `0.0`. Use
+//! [`Constituent::weight_opt`] for an `Option<f64>` accessor that returns
+//! `None` on the NaN sentinel.
 //!
 //! # Limitations (v1.0.x)
 //!
-//! - **No ticker from N-PORT**: SEC N-PORT does not include ticker
-//!   symbols. `SecNport` rows set [`Constituent::ticker`] to `None`.
-//!   GitHub mirror rows populate ticker.
-//! - **No weight/shares from GitHub mirrors**: the three GitHub OSS
-//!   mirrors are ticker-only. They provide composition history but no
-//!   per-holding weight vector.
 //! - **No GICS sector**: reserved for v1.1 via SIC -> GICS cross-walk.
-//! - **60-90 day filing lag** for N-PORT: unavoidable regulatory
-//!   constraint. GitHub mirrors and sponsor-CDN close the recency gap.
+//! - **Filing lag**: the regulatory-filing baseline trails real time;
+//!   sponsor-published holdings close the recency gap.
 //!
 //! # Modules
 //!
@@ -105,14 +64,13 @@
 //! - [`date`] -- [`YearMonth`] newtype for month inputs.
 //! - [`types`] -- [`Constituent`], [`IndexSnapshot`], [`IndexId`],
 //!   [`types::DataSource`].
-//! - [`github_mirror`] -- OSS GitHub CSV fetchers (fja05680, yfiua,
-//!   hanshof) with ticker parsers and forward-fill helper.
-//! - [`nport`] -- N-PORT `primary_doc.xml` parser.
-//! - [`sponsor`] -- sponsor-CDN CSV parsers.
-//! - [`wayback`] -- Internet Archive CDX + snapshot client.
-//! - [`cik`] -- ETF -> CIK / series mapping (verified against live SEC).
+//! - [`github_mirror`] -- historical constituent CSV fetchers.
+//! - [`nport`] -- regulatory filing parser.
+//! - [`sponsor`] -- sponsor holdings CSV parsers.
+//! - [`wayback`] -- archived-snapshot client.
+//! - [`cik`] -- ETF identifier mapping.
 //! - [`parquet_io`] -- parquet writer + reader.
-//! - [`sec`] -- SEC EDGAR client used by the CLI for backfill.
+//! - [`sec`] -- filing client used by the CLI for backfill.
 //! - [`coalesce`] -- merge rows from multiple sources into one snapshot.
 //! - [`error`] -- unified [`Error`] enum and [`Result`] alias.
 

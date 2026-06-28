@@ -8,17 +8,8 @@ use serde::{Deserialize, Serialize};
 /// Which upstream source produced a given row.
 ///
 /// Rows written by different sources for the same `(index, identity, date)`
-/// are coalesced by the [`crate::coalesce`] layer with a priority ladder
-/// (highest first):
-///
-/// | Priority | Variant                    | Coverage             | Fields       |
-/// |----------|----------------------------|----------------------|--------------|
-/// | 5        | `IsharesCdn`, `InvescoCdn`, `SpdrCdn` | forward, daily    | full         |
-/// | 4        | `GithubFja05680`           | 1996-present, daily  | ticker only  |
-/// | 3        | `GithubYfiua { month }`    | ~2018-present, monthly | ticker only |
-/// | 3        | `GithubHanshof`            | 1996-present, daily  | ticker only  |
-/// | 2        | `Wayback(date)`            | 2019+, sparse        | varies       |
-/// | 1        | `SecNport`                 | 2019-11-present, monthly | full (no ticker) |
+/// are reconciled by the [`crate::coalesce`] layer, which keeps a single
+/// best row per key based on each source's [`priority`](DataSource::priority).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataSource {

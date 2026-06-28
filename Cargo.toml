@@ -10,53 +10,53 @@ members = [
 version = "1.0.1"
 edition = "2021"
 authors = ["userFRM"]
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/userFRM/indexkit"
 documentation = "https://docs.rs/indexkit"
 
 [workspace.dependencies]
 # -- Core --
-anyhow = "1.0.102"
-thiserror = "2.0.18"
+anyhow = "1"
+thiserror = "2"
 
 # -- Async runtime --
-tokio = { version = "1.52.1", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 
 # -- Serialization --
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # -- Logging --
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # -- Time --
-chrono = { version = "0.4.44", features = ["serde"] }
-chrono-tz = "0.10.4"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 
 # -- Async utilities --
-async-trait = "0.1.89"
+async-trait = "0.1"
 
 # -- HTTP --
-reqwest = { version = "0.13.2", features = ["json", "rustls"], default-features = false }
-bytes = "1.11.1"
-futures = "0.3.32"
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
+bytes = "1"
+futures = "0.3"
 
 # -- Crypto --
-sha2 = "0.11.0"
+sha2 = "0.11"
 
 # -- Parquet / Arrow --
-arrow = { version = "58.1.0", default-features = false, features = ["csv"] }
-parquet = { version = "58.1.0", default-features = false, features = ["snap", "zstd", "arrow"] }
+arrow = { version = "58", default-features = false, features = ["csv"] }
+parquet = { version = "58", default-features = false, features = ["snap", "zstd", "arrow"] }
 
-# -- XML (N-PORT primary_doc.xml parsing) --
-quick-xml = "0.39.2"
+# -- XML --
+quick-xml = "0.39"
 
-# -- XLSX (SSGA SPDR daily-holdings sheet parsing for DIA/MDY/etc.) --
-calamine = "0.34.0"
+# -- XLSX --
+calamine = "0.34"
 
 # -- CLI --
-clap = { version = "4.6.1", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 [profile.release]
 lto = "thin"
