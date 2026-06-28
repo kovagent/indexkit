@@ -9,7 +9,7 @@ Daily index constituents for the S&P 500, S&P 400/600, Nasdaq-100 and Dow Jones,
 indexkit = "1.0"
 ```
 
-Until it is published to crates.io, depend on the repository directly:
+To track unreleased changes, depend on the repository directly:
 
 ```toml
 indexkit = { git = "https://github.com/userFRM/indexkit" }
