@@ -13,6 +13,13 @@
     "trust_cik": "0001067839",
     "series_id": null
   },
+  "rut": {
+    "index": "rut",
+    "ticker": "IWM",
+    "name": "iShares Russell 2000 ETF",
+    "trust_cik": "0001100663",
+    "series_id": "S000004344"
+  },
   "sp400": {
     "index": "sp400",
     "ticker": "IJH",
