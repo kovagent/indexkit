@@ -17,7 +17,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (`crates/indexkit/tests/fixtures/spdr_dia_sample.xlsx`).
 - `IndexId::Rut` (Russell 2000) wired through `IndexId::ALL`,
   `from_str_id`, `as_str`, `cik::entry_for` (iShares Trust CIK
-  0001100663, series S000004361) and `sponsor_url` (IWM via the
+  0001100663, series S000004344) and `sponsor_url` (IWM via the
   iShares CSV CDN).
 - `sponsor::sponsor_urls(IndexId) -> Vec<(DataSource, &'static str,
   &'static str)>` returns AUM-ranked endpoints (primary first,
@@ -68,6 +68,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Russell 2000 N-PORT filings are read from IWM.** The IWM series
+  was recorded as S000004361, which is the iShares iBoxx investment
+  grade corporate bond ETF, so every filing parsed to zero equity
+  holdings and no Russell 2000 month was ever written.
 - **`quick-xml` 0.41 and `calamine` 0.36** clear RUSTSEC-2026-0194
   (quadratic duplicate-attribute check) and RUSTSEC-2026-0195
   (unbounded namespace declarations in `NsReader`), which failed the
