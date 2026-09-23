@@ -41,8 +41,9 @@ pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/kovagent
 /// file, falling back to the next entry on a network failure, a non-2xx
 /// status, a 2xx body that is not holdings (sponsors answer some retired URLs
 /// with an HTML page and status 200), or a file listing well under the index's
-/// member count. An index with no second fund here still has its quarterly
-/// N-PORT holdings, which [`crate::Indexkit::latest`] falls back to.
+/// member count. When every endpoint fails, [`crate::Indexkit::latest`] answers
+/// from the index's other sources: the last sponsor day fetched, a membership
+/// list, or the quarterly N-PORT holdings.
 ///
 /// AUM ranking is approximate (late-2025 / early-2026 figures) and prefers
 /// data-source robustness as a tie-breaker (clean XLSX/CSV endpoints over
@@ -255,7 +256,7 @@ impl SponsorClient {
 }
 
 /// The fewest holdings a complete file for `index` can list: roughly nine
-/// tenths of the index's member count. Below it a file is partial, such as the
+/// tenths of the index's member count, four fifths for the Russell 2000. Below it a file is partial, such as the
 /// top-ten view a product page renders first, and is not accepted as the day's
 /// holdings.
 fn min_holdings(index: IndexId) -> usize {
@@ -404,10 +405,13 @@ pub fn parse_ishares_csv(
         {
             continue;
         }
+        // iShares spells a share class `BRK B` / `MOG A` where SPDR, the other
+        // fund for the same index, spells it `BRK.B` / `MOG.A`. One spelling
+        // keeps the two files the same members when both land on a day.
         let ticker = ticker_i
             .and_then(|i| row.get(i))
             .filter(|s| !s.is_empty() && *s != "-")
-            .cloned();
+            .map(|s| s.replace([' ', '/'], "."));
         let name = name_i.and_then(|i| row.get(i)).cloned().unwrap_or_default();
         if !is_listed_stock(ticker.as_deref(), &name) {
             continue;
@@ -1169,6 +1173,7 @@ Ticker,Name,Type,Sector,Asset Class,Market Value,Notional Value,Quantity,Price,L
     fn parse_ishares_latest_holdings_drops_unidentifiable_rows() {
         let csv = "Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Quantity,Price,Location,Exchange,Currency,FX Rate,Market Currency,Accrual Date\n\
 \"TWST\",\"TWIST BIOSCIENCE\",\"Health Care\",\"Equity\",\"276,882,702.74\",\"0.36\",\"276,882,702.74\",\"1,669,678.00\",\"165.83\",\"United States\",\"NASDAQ\",\"USD\",\"1.00\",\"USD\",\"-\"\n\
+\"MOG A\",\"MOOG INC CLASS A\",\"Industrials\",\"Equity\",\"266,776,283.58\",\"0.35\",\"266,776,283.58\",\"722,149.00\",\"369.42\",\"United States\",\"NYSE\",\"USD\",\"1.00\",\"USD\",\"-\"\n\
 \"-\",\"OMNIAB INC $12.50 VESTING Prvt\",\"Health Care\",\"Equity\",\"1.31\",\"0.00\",\"1.31\",\"130,676.00\",\"0.00\",\"United States\",\"NO MARKET (E.G. UNLISTED)\",\"USD\",\"1.00\",\"USD\",\"-\"\n\
 \"ADRO\",\"CHINOOK THERAPEUTICS INC\",\"Health Care\",\"Equity\",\"223,817.75\",\"0.00\",\"223,817.75\",\"1,678,712.00\",\"0.13\",\"United States\",\"NO MARKET (E.G. UNLISTED)\",\"USD\",\"1.00\",\"USD\",\"-\"\n\
 \"AKE\",\"AKERO THERAPEUTICS CVR\",\"Health Care\",\"Equity\",\"1,125,266.35\",\"0.00\",\"1,125,266.35\",\"1,731,179.00\",\"0.65\",\"United States\",\"NASDAQ\",\"USD\",\"1.00\",\"USD\",\"-\"\n";
@@ -1178,8 +1183,9 @@ Ticker,Name,Type,Sector,Asset Class,Market Value,Notional Value,Quantity,Price,L
             DataSource::IsharesCdn,
         )
         .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].ticker.as_deref(), Some("TWST"));
+        let tickers: Vec<_> = rows.iter().filter_map(|r| r.ticker.as_deref()).collect();
+        // `MOG A` is spelled the way SPDR spells it.
+        assert_eq!(tickers, ["TWST", "MOG.A"]);
     }
 
     /// iShares answers retired holdings URLs with its product page and a 200.

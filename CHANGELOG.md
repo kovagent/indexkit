@@ -132,7 +132,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   Financial, an S&P 600 member. Both parsers now keep listed stocks
   only. An iShares member held only through a swap (F&G Annuities in
   IJR) is kept at its notional weight, while a swap that repeats a
-  stock line is not.
+  stock line is not. iShares share-class tickers (`BRK B`, `MOG A`) are
+  spelled with a dot, as SPDR spells them, so a day served by either
+  fund of an index lists each member once and under one ticker.
 - **The NDX backups work.** The Invesco QQQ / QQQM entries were routed
   to the CSV parser though the endpoint serves JSON, and their
   `loadType=initial` query returned only the top ten holdings. Both
