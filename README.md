@@ -96,7 +96,7 @@ Run `indexkit-cli --help` for the full command list.
 | Dow Jones Industrial Average | Quarterly from 2020-01, monthly membership from 2023-07 | From 2026-04 |
 | Russell 2000 | Quarterly from 2019-12 | From 2026-09 |
 
-Quarterly months carry the fund's regulatory holdings; membership rows carry tickers only. `latest` returns the newest day available, which falls back to the newest quarterly holdings when no daily file has been fetched yet.
+Quarterly months carry the fund's regulatory holdings; membership rows carry tickers only. `latest` returns the newest day from the best source in the newest month that has data: the sponsor holdings when a daily file has been fetched, otherwise the membership list or the quarterly holdings.
 
 ## Data
 

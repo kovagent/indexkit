@@ -317,6 +317,7 @@ impl Indexkit {
                 }
                 Err(Error::SnapshotNotFound { .. }) => {}
                 Err(e) => {
+                    tracing::warn!(%id, %ym, "latest: month unavailable, trying the one before: {e}");
                     failure.get_or_insert(e);
                 }
             }
