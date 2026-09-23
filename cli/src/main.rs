@@ -329,11 +329,21 @@ async fn cmd_daily_fetch(
     let today = Utc::now().date_naive();
     let ym = YearMonth::new(today.year(), today.month()).unwrap();
 
+    // Every index is attempted and whatever succeeded is written; the
+    // command then fails if any index did not, so a run that fetched
+    // nothing for an index is not reported as a success.
+    let mut failed = Vec::new();
     for idx in indices {
         match fetch_sponsor_one(&client, data_dir, idx, today, ym).await {
             Ok(n) => println!("{idx}: appended {n} rows from sponsor CDN"),
-            Err(e) => tracing::warn!(%idx, "sponsor fetch failed: {e}"),
+            Err(e) => {
+                tracing::warn!(%idx, "sponsor fetch failed: {e}");
+                failed.push(idx.as_str());
+            }
         }
+    }
+    if !failed.is_empty() {
+        bail!("sponsor fetch failed for {}", failed.join(", "));
     }
     Ok(())
 }
@@ -602,15 +612,22 @@ fn yfiua_mid_month(ym: YearMonth) -> NaiveDate {
 async fn cmd_nightly_append(data_dir: &Path) -> Result<()> {
     let sec = SecClient::new()?;
     let mut any_written = false;
+    let mut failed = Vec::new();
     for idx in IndexId::ALL {
         match nightly_append_one(&sec, data_dir, idx).await {
             Ok(true) => any_written = true,
             Ok(false) => tracing::info!(%idx, "no new months to append"),
-            Err(e) => tracing::warn!(%idx, "nightly append failed: {e}"),
+            Err(e) => {
+                tracing::warn!(%idx, "nightly append failed: {e}");
+                failed.push(idx.as_str());
+            }
         }
     }
     if !any_written {
         println!("No new data. Nothing to commit.");
+    }
+    if !failed.is_empty() {
+        bail!("nightly append failed for {}", failed.join(", "));
     }
     Ok(())
 }

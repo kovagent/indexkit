@@ -53,6 +53,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (`indexkit email@email.com`) instead of a personal address. Set
   `INDEXKIT_SEC_USER_AGENT` to a real one when running the backfill;
   the workflows read it from the `CONTACT_EMAIL` secret.
+- `daily-fetch` and `nightly-append` exit non-zero when any index
+  fails, after attempting every index and writing what succeeded, and
+  the nightly workflow fails its run when a fetch step failed. Both
+  commands used to log a warning and exit 0, so the nightly stayed
+  green while S&P 400, S&P 600, Nasdaq-100 and Russell 2000 wrote no
+  sponsor rows.
 - The README coverage table states what the bundled data holds: S&P
   400, S&P 600, Nasdaq-100 and Russell 2000 history is quarterly
   regulatory holdings, not daily, and daily holdings with weights start
