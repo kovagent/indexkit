@@ -19,19 +19,24 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `from_str_id`, `as_str`, `cik::entry_for` (iShares Trust CIK
   0001100663, series S000004344) and `sponsor_url` (IWM via the
   iShares CSV CDN).
+- `parse_holdings(source, body, as_of)` dispatches a sponsor body to
+  its parser and errors on a wrong file or zero equity rows.
+- `parse_invesco_dng_json` parses Invesco's holdings JSON (the QQQ /
+  QQQM backups for NDX), keeping common stock and depositary receipts.
 - `sponsor::sponsor_urls(IndexId) -> Vec<(DataSource, &'static str,
   &'static str)>` returns AUM-ranked endpoints (primary first,
   backups follow). Per-index ladder:
   - SP500: SPY (SSGA SPDR XLSX) > IVV (iShares CSV)
   - SP400: IJH (iShares CSV) > MDY (SSGA SPDR XLSX)
-  - SP600: IJR (iShares CSV) > SLY (SSGA SPDR XLSX)
+  - SP600: IJR (iShares CSV) > SPSM (SSGA SPDR XLSX)
   - NDX: Nasdaq API (list-type) > Invesco DNG QQQ JSON > Invesco DNG QQQM JSON
   - DJIA: DIA only
   - RUT: IWM only
 - `SponsorClient::fetch_today` now walks `sponsor_urls` and falls
-  back to each backup endpoint on 4xx / 5xx / network failure,
+  back to each backup endpoint on 4xx / 5xx / network failure, or on
+  a 2xx body that does not parse as that sponsor's holdings file,
   warn-logging the failed primary. Returns the source tag and bytes
-  of the first successful endpoint.
+  of the first endpoint that served holdings.
 
 ### Changed
 
@@ -68,6 +73,23 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **S&P 400, S&P 600 and Russell 2000 daily holdings fetch again.**
+  iShares answers its old `1467271812596.ajax` holdings URLs with the
+  product page and status 200, and `fetch_today` took any 2xx as the
+  file, so the parse found no rows and the SPDR backups were never
+  tried. The iShares endpoints now point at the
+  `latest-holdings.csv` export, whose rows carry no CUSIP and are keyed
+  by ticker, with swaps and warrants on a constituent's ticker filtered
+  out by the `Type` column. A body that is not holdings falls through to
+  the next endpoint. The S&P 600 backup moves from SLY, which SSGA no
+  longer serves, to SPSM. `parse_ishares_csv` and `parse_invesco_csv`
+  now error when the header row is missing instead of returning an
+  empty list. (Closes #95.)
+- **The NDX backups work.** The Invesco QQQ / QQQM entries were routed
+  to the CSV parser though the endpoint serves JSON, and their
+  `loadType=initial` query returned only the top ten holdings. Both
+  now go to `parse_invesco_dng_json` and request every holding, so NDX
+  still updates when Nasdaq's API does not answer.
 - **Russell 2000 N-PORT filings are read from IWM.** The IWM series
   was recorded as S000004361, which is the iShares iBoxx investment
   grade corporate bond ETF, so every filing parsed to zero equity

@@ -36,8 +36,10 @@ pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/userFRM/
 
 /// Ordered list of sponsor-CDN endpoints for an ETF proxy index, ranked by
 /// AUM (primary first, backups follow). [`SponsorClient::fetch_today`] walks
-/// the list and returns the first successful 200, falling back to the next
-/// entry on 4xx/5xx/network failure.
+/// the list and returns the first response that parses as a holdings file,
+/// falling back to the next entry on a network failure, a non-2xx status, or
+/// a 2xx body that is not holdings (sponsors answer some retired URLs with an
+/// HTML page and status 200).
 ///
 /// AUM ranking is approximate (late-2025 / early-2026 figures) and prefers
 /// data-source robustness as a tie-breaker (clean XLSX/CSV endpoints over
@@ -49,7 +51,7 @@ pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/userFRM/
 /// |-------|-------------------------|--------------------------------------------------|
 /// | SP500 | SPY (SSGA SPDR XLSX)    | IVV (iShares CSV)                               |
 /// | SP400 | IJH (iShares CSV)       | MDY (SSGA SPDR XLSX)                            |
-/// | SP600 | IJR (iShares CSV)       | SLY (SSGA SPDR XLSX)                            |
+/// | SP600 | IJR (iShares CSV)       | SPSM (SSGA SPDR XLSX)                           |
 /// | NDX   | Nasdaq API (list-type)  | Invesco DNG QQQ JSON, then Invesco DNG QQQM JSON |
 /// | DJIA  | DIA (SSGA SPDR XLSX)    | (none — no comparable second)                   |
 /// | RUT   | IWM (iShares CSV)       | (none — VTWO needs JS scraper)                  |
@@ -64,14 +66,14 @@ pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static s
             (
                 DataSource::IsharesCdn,
                 "IVV",
-                "https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund",
+                "https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/latest-holdings.csv",
             ),
         ],
         IndexId::Sp400 => vec![
             (
                 DataSource::IsharesCdn,
                 "IJH",
-                "https://www.ishares.com/us/products/239763/ishares-core-sp-midcap-etf/1467271812596.ajax?fileType=csv&fileName=IJH_holdings&dataType=fund",
+                "https://www.ishares.com/us/products/239763/ishares-core-sp-midcap-etf/latest-holdings.csv",
             ),
             (
                 DataSource::SpdrCdn,
@@ -83,12 +85,12 @@ pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static s
             (
                 DataSource::IsharesCdn,
                 "IJR",
-                "https://www.ishares.com/us/products/239774/ishares-core-sp-smallcap-etf/1467271812596.ajax?fileType=csv&fileName=IJR_holdings&dataType=fund",
+                "https://www.ishares.com/us/products/239774/ishares-core-sp-smallcap-etf/latest-holdings.csv",
             ),
             (
                 DataSource::SpdrCdn,
-                "SLY",
-                "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-sly.xlsx",
+                "SPSM",
+                "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-spsm.xlsx",
             ),
         ],
         IndexId::Ndx => vec![
@@ -105,18 +107,20 @@ pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static s
             // Invesco DNG (Distribution Next-Gen) holdings JSON for QQQ
             // -- the endpoint Invesco's own QQQ product page calls to
             // render its all-holdings modal. Reachable from US egress;
-            // EU edge currently returns HTTP 406 (geo-block).
+            // EU edge currently returns HTTP 406 (geo-block). Without a
+            // `loadType` it returns every holding; `loadType=initial` is
+            // the page's first render and stops at the top ten.
             (
                 DataSource::InvescoCdn,
                 "QQQ",
-                "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/QQQ/holdings/fund?idType=ticker&interval=daily&productType=ETF&loadType=initial",
+                "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/QQQ/holdings/fund?idType=ticker&interval=daily&productType=ETF",
             ),
             // Same DNG endpoint for QQQM (Invesco Nasdaq-100 ETF, sister
             // share-class, same underlying constituents).
             (
                 DataSource::InvescoCdn,
                 "QQQM",
-                "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/QQQM/holdings/fund?idType=ticker&interval=daily&productType=ETF&loadType=initial",
+                "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/QQQM/holdings/fund?idType=ticker&interval=daily&productType=ETF",
             ),
         ],
         IndexId::Dji => vec![(
@@ -127,7 +131,7 @@ pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static s
         IndexId::Rut => vec![(
             DataSource::IsharesCdn,
             "IWM",
-            "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund",
+            "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/latest-holdings.csv",
         )],
     }
 }
@@ -160,8 +164,9 @@ impl SponsorClient {
     /// Fetch today's sponsor-CDN holdings as raw bytes.
     ///
     /// Walks [`sponsor_urls`] in AUM order: tries the primary first, falls
-    /// back to each backup on network failure or non-2xx response. Returns
-    /// the source tag and bytes of the first successful endpoint.
+    /// back to each backup on a network failure, a non-2xx response, or a
+    /// body that [`parse_holdings`] rejects. Returns the source tag and
+    /// bytes of the first endpoint that served a holdings file.
     ///
     /// Errors only when every endpoint fails or the index has no sponsor
     /// entries at all.
@@ -170,27 +175,34 @@ impl SponsorClient {
         if endpoints.is_empty() {
             return Err(Error::Other(format!("no sponsor url for {index}")));
         }
+        self.fetch_first(index, &endpoints).await
+    }
+
+    async fn fetch_first(
+        &self,
+        index: IndexId,
+        endpoints: &[(DataSource, &str, &str)],
+    ) -> Result<(DataSource, bytes::Bytes)> {
+        let today = chrono::Utc::now().date_naive();
         let mut last_err: Option<String> = None;
         for (src, ticker, url) in endpoints {
-            match self.http.get(url).send().await {
+            let failure = match self.http.get(*url).send().await {
                 Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                    Ok(body) => return Ok((src, body)),
-                    Err(e) => {
-                        last_err = Some(format!("{ticker}: body read failed: {e}"));
-                        tracing::warn!(%index, %ticker, "sponsor body read failed: {e}");
-                    }
+                    Ok(body) => match parse_holdings(src, &body, today) {
+                        Ok(_) => return Ok((src.clone(), body)),
+                        Err(e) => format!("{ticker}: not a holdings file: {e}"),
+                    },
+                    Err(e) => format!("{ticker}: body read failed: {e}"),
                 },
-                Ok(resp) => {
-                    let code = resp.status().as_u16();
-                    let reason = resp.status().canonical_reason().unwrap_or("");
-                    last_err = Some(format!("{ticker}: HTTP {code} {reason}"));
-                    tracing::warn!(%index, %ticker, "sponsor fetch HTTP {code} {reason}, trying next");
-                }
-                Err(e) => {
-                    last_err = Some(format!("{ticker}: {e}"));
-                    tracing::warn!(%index, %ticker, "sponsor fetch network error: {e}, trying next");
-                }
-            }
+                Ok(resp) => format!(
+                    "{ticker}: HTTP {} {}",
+                    resp.status().as_u16(),
+                    resp.status().canonical_reason().unwrap_or("")
+                ),
+                Err(e) => format!("{ticker}: {e}"),
+            };
+            tracing::warn!(%index, "sponsor fetch failed, trying next: {failure}");
+            last_err = Some(failure);
         }
         Err(Error::Other(format!(
             "all sponsor endpoints failed for {index}: {}",
@@ -199,11 +211,49 @@ impl SponsorClient {
     }
 }
 
+/// Parse a sponsor holdings body with the parser for `source`.
+///
+/// Errors when the body is not that sponsor's holdings file or carries no
+/// equity rows, so a caller can tell a wrong file from an empty index.
+pub fn parse_holdings(
+    source: &DataSource,
+    body: &[u8],
+    as_of_fallback: NaiveDate,
+) -> Result<Vec<Constituent>> {
+    let text = || {
+        std::str::from_utf8(body)
+            .map_err(|e| Error::Other(format!("{} body is not UTF-8: {e}", source.tag())))
+    };
+    let rows = match source {
+        DataSource::IsharesCdn => parse_ishares_csv(text()?, as_of_fallback, source.clone())?,
+        DataSource::InvescoCdn => parse_invesco_dng_json(body, as_of_fallback)?,
+        DataSource::SpdrCdn => parse_spdr_xlsx(body, as_of_fallback)?,
+        DataSource::NasdaqApi => parse_nasdaq_ndx_json(body, as_of_fallback)?,
+        other => {
+            return Err(Error::Other(format!(
+                "{} is not a sponsor source",
+                other.tag()
+            )))
+        }
+    };
+    if rows.is_empty() {
+        return Err(Error::Other(format!(
+            "{} holdings file has no equity rows",
+            source.tag()
+        )));
+    }
+    Ok(rows)
+}
+
 /// Parse an iShares CSV holdings file into [`Constituent`]s.
 ///
 /// iShares files have a ~9-line preamble with trust metadata before the
 /// header row. The header appears when a line starts with `"Ticker"`.
-/// Returns an empty vec if the header is not found.
+/// Errors if the header is not found, so a page served in place of the file
+/// is not mistaken for an empty index.
+///
+/// The current `latest-holdings.csv` export carries no CUSIP, ISIN or SEDOL
+/// column; its rows are keyed by ticker instead.
 ///
 /// Dates in iShares CSVs are reported in the preamble as `"Fund Holdings
 /// as of","MMM DD, YYYY"`. If not found, `as_of_fallback` is used.
@@ -233,7 +283,9 @@ pub fn parse_ishares_csv(
         }
     }
     let Some(header) = header_idx else {
-        return Ok(Vec::new());
+        return Err(Error::Other(
+            "iShares csv: 'Ticker' header row not found".into(),
+        ));
     };
 
     let idx = |want: &str| header.iter().position(|h| h.eq_ignore_ascii_case(want));
@@ -243,10 +295,12 @@ pub fn parse_ishares_csv(
     let cusip_i = idx("CUSIP");
     let isin_i = idx("ISIN");
     let asset_i = idx("Asset Class");
+    let type_i = idx("Type");
     let shares_i = idx("Shares").or_else(|| idx("Quantity"));
     let weight_i = idx("Weight (%)")
         .or_else(|| idx("Weight(%)"))
-        .or_else(|| idx("Weight"));
+        .or_else(|| idx("Weight"))
+        .or_else(|| idx("Market Weight"));
     let mv_i = idx("Market Value").or_else(|| idx("Notional Value"));
     let sedol_i = idx("SEDOL");
 
@@ -266,14 +320,25 @@ pub fn parse_ishares_csv(
                 continue;
             }
         }
-        let ticker = ticker_i.and_then(|i| row.get(i)).cloned();
+        // Where the file types each line, equity swaps and warrants also sit
+        // under the `Equity` asset class and repeat a constituent's ticker.
+        if let Some(ti) = type_i {
+            let v = row.get(ti).map(|s| s.as_str()).unwrap_or("");
+            if !v.eq_ignore_ascii_case("EQUITY") {
+                continue;
+            }
+        }
+        let ticker = ticker_i
+            .and_then(|i| row.get(i))
+            .filter(|s| !s.is_empty() && *s != "-")
+            .cloned();
         let name = name_i.and_then(|i| row.get(i)).cloned().unwrap_or_default();
         let cusip = cusip_i
             .and_then(|i| row.get(i))
             .cloned()
             .unwrap_or_default();
-        // Skip if no cusip AND no ISIN/SEDOL -- we can't join it.
-        if cusip.is_empty() {
+        // Skip a row with no identifier at all -- we can't join it.
+        if cusip.is_empty() && ticker.is_none() {
             let has_isin = isin_i
                 .and_then(|i| row.get(i))
                 .map(|s| !s.is_empty())
@@ -305,7 +370,7 @@ pub fn parse_ishares_csv(
             continue;
         }
         out.push(Constituent {
-            ticker: ticker.filter(|s| !s.is_empty() && s != "-"),
+            ticker,
             name,
             cusip,
             lei: None,
@@ -331,11 +396,10 @@ pub fn parse_ishares_csv(
 /// Invesco QQQ holdings CSVs have columns such as
 /// `Holdings Ticker, Holdings Name, Weight, Shares/Par Value, Market Value,
 /// Notional Value, Sector`. Date typically appears in a `Date` column.
+/// Errors if the first line is not a header naming a ticker or name column.
 pub fn parse_invesco_csv(csv: &str, as_of_fallback: NaiveDate) -> Result<Vec<Constituent>> {
     let mut lines = csv.lines();
-    let Some(header_line) = lines.next() else {
-        return Ok(Vec::new());
-    };
+    let header_line = lines.next().unwrap_or_default();
     let header = parse_csv_row(header_line);
     let idx = |want: &str| {
         header
@@ -354,6 +418,9 @@ pub fn parse_invesco_csv(csv: &str, as_of_fallback: NaiveDate) -> Result<Vec<Con
     let date_i = idx("Date").or_else(|| idx("As of Date"));
     let cusip_i = idx("CUSIP");
     let isin_i = idx("ISIN");
+    if ticker_i.is_none() && name_i.is_none() {
+        return Err(Error::Other("Invesco csv: header row not found".into()));
+    }
 
     let mut out = Vec::new();
     let mut as_of = as_of_fallback;
@@ -421,6 +488,84 @@ pub fn parse_invesco_csv(csv: &str, as_of_fallback: NaiveDate) -> Result<Vec<Con
             as_of,
             source: DataSource::InvescoCdn,
         });
+    }
+    out.sort_by(|a, b| {
+        b.weight
+            .partial_cmp(&a.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(out)
+}
+
+/// Parse Invesco's holdings JSON (the `dng-api.invesco.com` feed behind its
+/// product pages, used for QQQ / QQQM) into [`Constituent`] rows.
+///
+/// Response shape (verified 2026-09-23 against QQQ):
+///
+/// ```json
+/// {
+///   "effectiveDate": "2026-09-22",
+///   "holdings": [
+///     { "ticker": "NVDA", "issuerName": "NVIDIA Corp", "units": 180314828,
+///       "percentageOfTotalNetAssets": 8.277194,
+///       "securityTypeName": "Common Stock", "cusip": "67066G104" }
+///   ]
+/// }
+/// ```
+///
+/// Common stock and depositary receipts are kept; currency, collateral,
+/// futures and synthetic cash lines are dropped. Weights arrive in percent.
+pub fn parse_invesco_dng_json(body: &[u8], as_of_fallback: NaiveDate) -> Result<Vec<Constituent>> {
+    let v: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|e| Error::Other(format!("invesco json parse: {e}")))?;
+    let as_of = v
+        .get("effectiveDate")
+        .and_then(|s| s.as_str())
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .unwrap_or(as_of_fallback);
+    let holdings = v
+        .get("holdings")
+        .and_then(|h| h.as_array())
+        .ok_or_else(|| Error::Other("invesco json: missing holdings[]".into()))?;
+    let str_field = |h: &serde_json::Value, k: &str| {
+        h.get(k)
+            .and_then(|s| s.as_str())
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    let mut out: Vec<Constituent> = holdings
+        .iter()
+        .filter(|h| {
+            let kind = h
+                .get("securityTypeName")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            kind == "Common Stock" || kind.starts_with("American Depository Receipt")
+        })
+        .map(|h| {
+            let ticker = str_field(h, "ticker");
+            Constituent {
+                name: str_field(h, "issuerName"),
+                ticker: (!ticker.is_empty()).then_some(ticker),
+                cusip: str_field(h, "cusip"),
+                lei: None,
+                shares: h.get("units").and_then(|n| n.as_f64()).unwrap_or(0.0),
+                market_value_usd: 0.0,
+                weight: h
+                    .get("percentageOfTotalNetAssets")
+                    .and_then(|n| n.as_f64())
+                    .unwrap_or(0.0)
+                    / 100.0,
+                issuer_cik: None,
+                sector: None,
+                as_of,
+                source: DataSource::InvescoCdn,
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        return Err(Error::Other("invesco json: zero equity holdings".into()));
     }
     out.sort_by(|a, b| {
         b.weight
@@ -863,6 +1008,124 @@ Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Quantity,P
         assert_eq!(rows[0].source, DataSource::IsharesCdn);
     }
 
+    /// The `latest-holdings.csv` export iShares serves now: no CUSIP, ISIN or
+    /// SEDOL column, weight under `Market Weight`, and a `Type` column that
+    /// separates the stock from equity swaps and warrants on the same ticker.
+    /// Rows are the real IJR file's, trimmed.
+    #[test]
+    fn parse_ishares_latest_holdings_export() {
+        let csv = "iShares Core S&P Small-Cap ETF\n\
+Fund Holdings as of,\"Sep 21, 2026\"\n\
+Inception Date,\"May 22, 2000\"\n\
+\n\
+Ticker,Name,Type,Sector,Asset Class,Market Value,Notional Value,Quantity,Price,Location,Exchange,Currency,FX Rate,Market Currency,Accrual Date,Market Weight,Notional Weight\n\
+\"VSAT\",\"VIASAT INC\",\"EQUITY\",\"Information Technology\",\"Equity\",\"1,050,000,000.00\",\"1,050,000,000.00\",\"20,000,000.00\",\"52.50\",\"United States\",\"NASDAQ\",\"USD\",\"1.00\",\"USD\",\"-\",\"0.66\",\"0.66\"\n\
+\"JXN\",\"JACKSON FINANCIAL CLASS A\",\"EQUITY\",\"Financials\",\"Equity\",\"900,000,000.00\",\"900,000,000.00\",\"9,000,000.00\",\"100.00\",\"United States\",\"NYSE\",\"USD\",\"1.00\",\"USD\",\"-\",\"0.57\",\"0.57\"\n\
+\"JXN\",\"JACKSON FINANCIAL CLASS A\",\"SWAP\",\"Financials\",\"Equity\",\"0.00\",\"12,000,000.00\",\"120,000.00\",\"100.00\",\"United States\",\"-\",\"USD\",\"1.00\",\"USD\",\"-\",\"-\",\"0.01\"\n\
+\"XTSLA\",\"BLK CSH FND TREASURY SL AGENCY\",\"STIF\",\"Cash and/or Derivatives\",\"Money Market\",\"0.78\",\"-43,991,966.67\",\"1.00\",\"1.00\",\"United States\",\"-\",\"USD\",\"1.00\",\"USD\",\"-\",\"-\",\"-0.04\"\n";
+        let rows = parse_ishares_csv(
+            csv,
+            NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
+            DataSource::IsharesCdn,
+        )
+        .unwrap();
+        let tickers: Vec<_> = rows.iter().filter_map(|r| r.ticker.as_deref()).collect();
+        assert_eq!(tickers, ["VSAT", "JXN"]);
+        assert!((rows[0].weight - 0.0066).abs() < 1e-9);
+        assert_eq!(rows[0].cusip, "");
+        assert_eq!(rows[0].as_of, NaiveDate::from_ymd_opt(2026, 9, 21).unwrap());
+    }
+
+    /// IWM's export has no `Type` column; an unlisted line with no ticker
+    /// and no identifier cannot be joined and is dropped.
+    #[test]
+    fn parse_ishares_latest_holdings_drops_unidentifiable_rows() {
+        let csv = "Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Quantity,Price,Location,Exchange,Currency,FX Rate,Market Currency,Accrual Date\n\
+\"TWST\",\"TWIST BIOSCIENCE\",\"Health Care\",\"Equity\",\"276,882,702.74\",\"0.36\",\"276,882,702.74\",\"1,669,678.00\",\"165.83\",\"United States\",\"NASDAQ\",\"USD\",\"1.00\",\"USD\",\"-\"\n\
+\"-\",\"OMNIAB INC $12.50 VESTING Prvt\",\"Health Care\",\"Equity\",\"1.31\",\"0.00\",\"1.31\",\"130,676.00\",\"0.00\",\"United States\",\"NO MARKET (E.G. UNLISTED)\",\"USD\",\"1.00\",\"USD\",\"-\"\n";
+        let rows = parse_ishares_csv(
+            csv,
+            NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
+            DataSource::IsharesCdn,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].ticker.as_deref(), Some("TWST"));
+    }
+
+    /// iShares answers retired holdings URLs with its product page and a 200.
+    /// That is a wrong file, not an empty index.
+    #[test]
+    fn a_page_in_place_of_a_holdings_file_is_an_error() {
+        let page =
+            "<!DOCTYPE html><html><head><title>iShares</title></head><body>Holdings</body></html>";
+        let d = NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+        assert!(parse_ishares_csv(page, d, DataSource::IsharesCdn).is_err());
+        assert!(parse_invesco_csv(page, d).is_err());
+        for src in [
+            DataSource::IsharesCdn,
+            DataSource::InvescoCdn,
+            DataSource::SpdrCdn,
+            DataSource::NasdaqApi,
+        ] {
+            assert!(parse_holdings(&src, page.as_bytes(), d).is_err(), "{src:?}");
+        }
+    }
+
+    #[test]
+    fn parse_invesco_dng_json_sample() {
+        // Real QQQ response captured 2026-09-23 from the DNG endpoint with no
+        // `loadType`, which returns every holding.
+        let bytes = include_bytes!("../tests/fixtures/invesco_qqq_sample.json");
+        let rows =
+            parse_invesco_dng_json(bytes, NaiveDate::from_ymd_opt(2026, 9, 1).unwrap()).unwrap();
+        // 98 common stocks + 3 depositary receipts; currency, collateral,
+        // the index future and synthetic cash are dropped.
+        assert_eq!(rows.len(), 101);
+        assert_eq!(rows[0].ticker.as_deref(), Some("NVDA"));
+        assert_eq!(rows[0].cusip, "67066G104");
+        assert!((rows[0].weight - 0.08277194).abs() < 1e-9);
+        assert_eq!(rows[0].as_of, NaiveDate::from_ymd_opt(2026, 9, 22).unwrap());
+        assert!(rows.iter().any(|r| r.ticker.as_deref() == Some("ASML")));
+        assert!(rows.iter().all(|r| r.source == DataSource::InvescoCdn));
+    }
+
+    /// `fetch_today` must move on to the backup when the primary serves a
+    /// 200 page that is not a holdings file.
+    #[tokio::test]
+    async fn fetch_falls_through_a_200_page_to_the_backup() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/primary"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("<!DOCTYPE html><html><body>product page</body></html>"),
+            )
+            .mount(&server)
+            .await;
+        let holdings = "Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Quantity\n\
+\"AAPL\",\"APPLE INC\",\"IT\",\"Equity\",\"1,000.00\",\"7.12\",\"10.00\"\n";
+        Mock::given(path("/backup"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(holdings))
+            .mount(&server)
+            .await;
+
+        let primary = format!("{}/primary", server.uri());
+        let backup = format!("{}/backup", server.uri());
+        let endpoints = [
+            (DataSource::IsharesCdn, "P", primary.as_str()),
+            (DataSource::IsharesCdn, "B", backup.as_str()),
+        ];
+        let (_, body) = SponsorClient::new()
+            .unwrap()
+            .fetch_first(IndexId::Sp400, &endpoints)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), holdings.as_bytes());
+    }
+
     #[test]
     fn parse_nasdaq_ndx_sample() {
         // Real Nasdaq list-type response captured 2026-05-15 against the
@@ -982,11 +1245,12 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
         assert_eq!(sp400[0].1, "IJH");
         assert_eq!(sp400[1].1, "MDY");
 
-        // SP600: IJR primary, SLY backup.
+        // SP600: IJR primary, SPSM backup (SSGA's S&P 600 fund; the SLY
+        // file is gone).
         let sp600 = sponsor_urls(IndexId::Sp600);
         assert_eq!(sp600.len(), 2);
         assert_eq!(sp600[0].1, "IJR");
-        assert_eq!(sp600[1].1, "SLY");
+        assert_eq!(sp600[1].1, "SPSM");
 
         // NDX: Nasdaq's public list-type API is primary (official, free,
         // no geo-block). Invesco DNG endpoints for QQQ + QQQM follow as
