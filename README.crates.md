@@ -1,6 +1,6 @@
 # indexkit
 
-Daily index constituents for the S&P 500, S&P 400/600, Nasdaq-100 and Dow Jones, for Rust. No API keys, offline after the first fetch.
+Daily index constituents for the S&P 500, S&P 400/600, Nasdaq-100, Dow Jones and Russell 2000, for Rust. No API keys, offline after the first fetch.
 
 ```toml
 [dependencies]
@@ -16,6 +16,6 @@ async fn main() -> indexkit::Result<()> {
 }
 ```
 
-Full documentation: <https://github.com/userFRM/indexkit>
+Full documentation: <https://github.com/kovagent/indexkit>
 
 Licensed under MIT OR Apache-2.0.

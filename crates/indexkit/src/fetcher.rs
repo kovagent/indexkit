@@ -401,11 +401,11 @@ fn dirs_fallback() -> PathBuf {
 
 /// Default primary base URL (GitHub raw content).
 pub(crate) const DEFAULT_BASE_URL: &str =
-    "https://raw.githubusercontent.com/userFRM/indexkit/main/data";
+    "https://raw.githubusercontent.com/kovagent/indexkit/main/data";
 
 /// Default CDN mirror (jsDelivr).
 pub(crate) const DEFAULT_MIRROR_URL: &str =
-    "https://cdn.jsdelivr.net/gh/userFRM/indexkit@main/data";
+    "https://cdn.jsdelivr.net/gh/kovagent/indexkit@main/data";
 
 pub(crate) fn resolved_base_url() -> String {
     std::env::var("INDEXKIT_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())

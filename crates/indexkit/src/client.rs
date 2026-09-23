@@ -74,7 +74,7 @@ impl Indexkit {
     /// early detection.
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
-            .user_agent("indexkit/1.0 (+https://github.com/userFRM/indexkit)")
+            .user_agent("indexkit/1.0 (+https://github.com/kovagent/indexkit)")
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
@@ -90,7 +90,7 @@ impl Indexkit {
     /// Returns [`Error`] if the underlying reqwest client cannot be constructed.
     pub fn try_new() -> Result<Self> {
         let http = reqwest::Client::builder()
-            .user_agent("indexkit/1.0 (+https://github.com/userFRM/indexkit)")
+            .user_agent("indexkit/1.0 (+https://github.com/kovagent/indexkit)")
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
         Ok(Self {
@@ -100,7 +100,7 @@ impl Indexkit {
 
     /// Override the origin URL.
     ///
-    /// Default: `https://raw.githubusercontent.com/userFRM/indexkit/main/data`.
+    /// Default: `https://raw.githubusercontent.com/kovagent/indexkit/main/data`.
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.fetcher.set_base_url(url.into());
         self

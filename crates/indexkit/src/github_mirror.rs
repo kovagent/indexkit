@@ -46,7 +46,7 @@ use std::time::Duration;
 
 /// User-Agent for GitHub mirror fetches. GitHub raw endpoints do not
 /// require a descriptive UA but some OSS operators rate-limit by UA.
-pub const GITHUB_USER_AGENT: &str = "indexkit/1.0.1 (+https://github.com/userFRM/indexkit)";
+pub const GITHUB_USER_AGENT: &str = "indexkit/1.0.1 (+https://github.com/kovagent/indexkit)";
 
 /// Raw URL of the fja05680/sp500 historical components CSV (dated file --
 /// updated through 2026-01-14 as of v1.0.1 release).

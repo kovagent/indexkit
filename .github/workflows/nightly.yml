@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: write
     env:
-      INDEXKIT_SEC_USER_AGENT: "indexkit ${{ secrets.CONTACT_EMAIL || 'frederic.miesegaes@gmail.com' }}"
+      INDEXKIT_SEC_USER_AGENT: "indexkit ${{ secrets.CONTACT_EMAIL || 'email@email.com' }}"
       RUST_LOG: info
     steps:
       - uses: actions/checkout@v4

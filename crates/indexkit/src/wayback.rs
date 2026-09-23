@@ -27,7 +27,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 /// User-Agent for Wayback requests.
-pub const WAYBACK_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/userFRM/indexkit)";
+pub const WAYBACK_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/kovagent/indexkit)";
 
 /// One CDX match row, slimmed down to fields we use.
 #[derive(Debug, Clone, PartialEq, Eq)]

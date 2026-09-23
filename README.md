@@ -1,6 +1,6 @@
 # indexkit
 
-Daily index constituents for the S&P 500, S&P 400/600, Nasdaq-100 and Dow Jones, for Rust. Served from bundled parquet with on-demand fetch and a local cache. No API keys. Offline after the first query.
+Daily index constituents for the S&P 500, S&P 400/600, Nasdaq-100, Dow Jones and Russell 2000, for Rust. Served from bundled parquet with on-demand fetch and a local cache. No API keys. Offline after the first query.
 
 ## Install
 
@@ -12,7 +12,7 @@ indexkit = "1.0"
 To track unreleased changes, depend on the repository directly:
 
 ```toml
-indexkit = { git = "https://github.com/userFRM/indexkit" }
+indexkit = { git = "https://github.com/kovagent/indexkit" }
 ```
 
 ## Quick start
@@ -87,13 +87,16 @@ Run `indexkit-cli --help` for the full command list.
 
 ## Coverage
 
-| Index | Granularity | History |
+| Index | History | Daily holdings with weights |
 |---|---|---|
-| S&P 500 | Daily | 1996-01 to present |
-| S&P MidCap 400 | Daily | 2019-11 to present |
-| S&P SmallCap 600 | Daily | 2019-11 to present |
-| Nasdaq-100 | Daily | 2019-11 to present |
-| Dow Jones Industrial Average | Daily | 2019-11 to present |
+| S&P 500 | Daily membership from 1996-01 | From 2026-04 |
+| S&P MidCap 400 | Quarterly from 2019-12 | From 2026-09 |
+| S&P SmallCap 600 | Quarterly from 2019-12 | From 2026-09 |
+| Nasdaq-100 | Quarterly from 2019-12, monthly membership from 2023-07 | From 2026-09 |
+| Dow Jones Industrial Average | Quarterly from 2020-01, monthly membership from 2023-07 | From 2026-04 |
+| Russell 2000 | Quarterly from 2019-12 | From 2026-09 |
+
+Quarterly months carry the fund's regulatory holdings; membership rows carry tickers only. `latest` returns the newest day available, which falls back to the newest quarterly holdings when no daily file has been fetched yet.
 
 ## Data
 

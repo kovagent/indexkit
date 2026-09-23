@@ -8,8 +8,9 @@
 //! produces near-daily resolution back to Nov 2019 and true T+1 going
 //! forward.
 //!
-//! Source priority at the coalesce layer:
-//! `Cdn (3) > Wayback (2) > Nport (1)`
+//! When sources overlap on a day, the coalesce layer keeps the row from the
+//! source with the higher [`DataSource::priority`]: sponsor files, then
+//! Wayback snapshots, then N-PORT.
 //!
 //! # Legal posture
 //!
@@ -32,7 +33,7 @@ use std::time::Duration;
 /// Default User-Agent for sponsor-CDN fetches. Sponsors sometimes ToS-limit
 /// automated access; indexkit identifies itself clearly so traffic is not
 /// mistaken for a malicious bot.
-pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/userFRM/indexkit)";
+pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/kovagent/indexkit)";
 
 /// Ordered list of sponsor-CDN endpoints for an ETF proxy index, ranked by
 /// AUM (primary first, backups follow). [`SponsorClient::fetch_today`] walks
