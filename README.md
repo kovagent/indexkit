@@ -26,10 +26,12 @@ async fn main() -> indexkit::Result<()> {
     let sp500 = indexkit::sp500_latest().await?;
     let ndx = indexkit::constituents_for(IndexId::Ndx, ym!(2024, 1)).await?;
     let dji = indexkit::dji_latest().await?;
+    let sp400 = indexkit::latest(IndexId::Sp400).await?; // any index, newest day
 
     println!("S&P 500 latest: {} holdings", sp500.len());
     println!("NDX Jan 2024: {} holdings", ndx.len());
     println!("DJIA latest: {} holdings", dji.len());
+    println!("S&P 400 on {}: {} holdings", sp400.date, sp400.constituents.len());
     Ok(())
 }
 ```
