@@ -50,10 +50,10 @@ arrow = { version = "58", default-features = false, features = ["csv"] }
 parquet = { version = "58", default-features = false, features = ["snap", "zstd", "arrow"] }
 
 # -- XML --
-quick-xml = "0.39"
+quick-xml = "0.41"
 
 # -- XLSX --
-calamine = "0.34"
+calamine = "0.36"
 
 # -- CLI --
 clap = { version = "4", features = ["derive", "env"] }

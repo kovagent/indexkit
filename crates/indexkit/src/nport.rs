@@ -126,7 +126,7 @@ pub fn parse_nport(xml: &[u8]) -> Result<NportFiling> {
             }
             Event::Text(t) => {
                 let text = t
-                    .xml_content()
+                    .xml10_content()
                     .map_err(|e: quick_xml::encoding::EncodingError| Error::Xml(e.to_string()))?
                     .to_string();
                 handle_text(
