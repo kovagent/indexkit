@@ -37,10 +37,12 @@ pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/kovagent
 
 /// Ordered list of sponsor-CDN endpoints for an ETF proxy index, ranked by
 /// AUM (primary first, backups follow). [`SponsorClient::fetch_today`] walks
-/// the list and returns the first response that parses as a holdings file,
-/// falling back to the next entry on a network failure, a non-2xx status, or
-/// a 2xx body that is not holdings (sponsors answer some retired URLs with an
-/// HTML page and status 200).
+/// the list and returns the first response that parses as a complete holdings
+/// file, falling back to the next entry on a network failure, a non-2xx
+/// status, a 2xx body that is not holdings (sponsors answer some retired URLs
+/// with an HTML page and status 200), or a file listing well under the index's
+/// member count. An index with no second fund here still has its quarterly
+/// N-PORT holdings, which [`crate::Indexkit::latest`] falls back to.
 ///
 /// AUM ranking is approximate (late-2025 / early-2026 figures) and prefers
 /// data-source robustness as a tie-breaker (clean XLSX/CSV endpoints over
@@ -137,6 +139,43 @@ pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static s
     }
 }
 
+/// Holdings URLs sponsors have retired, for Wayback backfills.
+///
+/// A capture of a retired URL still holds the file it served then, which the
+/// current URL's captures do not cover.
+pub fn retired_sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static str)> {
+    match index {
+        IndexId::Sp500 => vec![(
+            DataSource::IsharesCdn,
+            "IVV",
+            "https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund",
+        )],
+        IndexId::Sp400 => vec![(
+            DataSource::IsharesCdn,
+            "IJH",
+            "https://www.ishares.com/us/products/239763/ishares-core-sp-midcap-etf/1467271812596.ajax?fileType=csv&fileName=IJH_holdings&dataType=fund",
+        )],
+        IndexId::Sp600 => vec![
+            (
+                DataSource::IsharesCdn,
+                "IJR",
+                "https://www.ishares.com/us/products/239774/ishares-core-sp-smallcap-etf/1467271812596.ajax?fileType=csv&fileName=IJR_holdings&dataType=fund",
+            ),
+            (
+                DataSource::SpdrCdn,
+                "SLY",
+                "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-sly.xlsx",
+            ),
+        ],
+        IndexId::Rut => vec![(
+            DataSource::IsharesCdn,
+            "IWM",
+            "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund",
+        )],
+        IndexId::Ndx | IndexId::Dji => Vec::new(),
+    }
+}
+
 /// Primary sponsor-CDN endpoint (first entry of [`sponsor_urls`]).
 ///
 /// Kept for backwards compatibility with v1.0 callers that only need the
@@ -190,7 +229,10 @@ impl SponsorClient {
             let failure = match self.http.get(*url).send().await {
                 Ok(resp) if resp.status().is_success() => match resp.bytes().await {
                     Ok(body) => match parse_holdings(src, &body, today) {
-                        Ok(_) => return Ok((src.clone(), body)),
+                        Ok(rows) if rows.len() >= min_holdings(index) => {
+                            return Ok((src.clone(), body))
+                        }
+                        Ok(rows) => format!("{ticker}: partial file, {} holdings", rows.len()),
                         Err(e) => format!("{ticker}: not a holdings file: {e}"),
                     },
                     Err(e) => format!("{ticker}: body read failed: {e}"),
@@ -209,6 +251,22 @@ impl SponsorClient {
             "all sponsor endpoints failed for {index}: {}",
             last_err.unwrap_or_else(|| "unknown".into())
         )))
+    }
+}
+
+/// The fewest holdings a complete file for `index` can list: roughly nine
+/// tenths of the index's member count. Below it a file is partial, such as the
+/// top-ten view a product page renders first, and is not accepted as the day's
+/// holdings.
+fn min_holdings(index: IndexId) -> usize {
+    match index {
+        IndexId::Sp500 => 450,
+        IndexId::Sp400 => 360,
+        IndexId::Sp600 => 540,
+        IndexId::Ndx => 90,
+        IndexId::Dji => 27,
+        // The Russell 2000 drifts below 2,000 between reconstitutions.
+        IndexId::Rut => 1_600,
     }
 }
 
@@ -255,6 +313,11 @@ pub fn parse_holdings(
 ///
 /// The current `latest-holdings.csv` export carries no CUSIP, ISIN or SEDOL
 /// column; its rows are keyed by ticker instead.
+///
+/// Only listed stocks are kept: cash, futures, rights, escrow, private and
+/// unlisted lines are dropped. Where the file has a `Type` column, a member
+/// held only through a swap is kept at its notional weight, and a swap that
+/// repeats a stock line is dropped.
 ///
 /// Dates in iShares CSVs are reported in the preamble as `"Fund Holdings
 /// as of","MMM DD, YYYY"`. If not found, `as_of_fallback` is used.
@@ -304,8 +367,11 @@ pub fn parse_ishares_csv(
         .or_else(|| idx("Market Weight"));
     let mv_i = idx("Market Value").or_else(|| idx("Notional Value"));
     let sedol_i = idx("SEDOL");
+    let exchange_i = idx("Exchange");
+    let notional_weight_i = idx("Notional Weight");
 
-    let mut out = Vec::new();
+    // `(row, held only through a swap)`.
+    let mut out: Vec<(Constituent, bool)> = Vec::new();
     for line in lines {
         if line.trim().is_empty() {
             continue;
@@ -322,18 +388,30 @@ pub fn parse_ishares_csv(
             }
         }
         // Where the file types each line, equity swaps and warrants also sit
-        // under the `Equity` asset class and repeat a constituent's ticker.
-        if let Some(ti) = type_i {
-            let v = row.get(ti).map(|s| s.as_str()).unwrap_or("");
-            if !v.eq_ignore_ascii_case("EQUITY") {
-                continue;
-            }
+        // under the `Equity` asset class. A swap usually repeats a stock line
+        // on the same ticker, but a member the fund holds only through a swap
+        // has no stock line at all; those are resolved after the loop.
+        let swap = match type_i.and_then(|i| row.get(i)).map(String::as_str) {
+            None => false,
+            Some(t) if t.eq_ignore_ascii_case("EQUITY") => false,
+            Some(t) if t.eq_ignore_ascii_case("SWAP") => true,
+            Some(_) => continue,
+        };
+        // Unlisted lines: a delisted stock still carried, or a right.
+        if exchange_i
+            .and_then(|i| row.get(i))
+            .is_some_and(|e| e.starts_with("NO MARKET"))
+        {
+            continue;
         }
         let ticker = ticker_i
             .and_then(|i| row.get(i))
             .filter(|s| !s.is_empty() && *s != "-")
             .cloned();
         let name = name_i.and_then(|i| row.get(i)).cloned().unwrap_or_default();
+        if !is_listed_stock(ticker.as_deref(), &name) {
+            continue;
+        }
         let cusip = cusip_i
             .and_then(|i| row.get(i))
             .cloned()
@@ -356,7 +434,9 @@ pub fn parse_ishares_csv(
             .and_then(|i| row.get(i))
             .and_then(|s| parse_number(s))
             .unwrap_or(0.0);
-        let weight_pct = weight_i
+        // A swap has no market weight; its exposure is its notional weight.
+        let weight_col = if swap { notional_weight_i } else { weight_i };
+        let weight_pct = weight_col
             .and_then(|i| row.get(i))
             .and_then(|s| parse_number(s))
             .unwrap_or(0.0);
@@ -370,20 +450,33 @@ pub fn parse_ishares_csv(
         if name.is_empty() && cusip.is_empty() {
             continue;
         }
-        out.push(Constituent {
-            ticker,
-            name,
-            cusip,
-            lei: None,
-            shares,
-            market_value_usd: mv,
-            weight,
-            issuer_cik: None,
-            sector: None,
-            as_of,
-            source: source.clone(),
-        });
+        out.push((
+            Constituent {
+                ticker,
+                name,
+                cusip,
+                lei: None,
+                shares,
+                market_value_usd: mv,
+                weight,
+                issuer_cik: None,
+                sector: None,
+                as_of,
+                source: source.clone(),
+            },
+            swap,
+        ));
     }
+    let held: std::collections::HashSet<String> = out
+        .iter()
+        .filter(|(_, swap)| !swap)
+        .filter_map(|(c, _)| c.ticker.clone())
+        .collect();
+    let mut out: Vec<Constituent> = out
+        .into_iter()
+        .filter(|(c, swap)| !swap || c.ticker.as_ref().is_some_and(|t| !held.contains(t)))
+        .map(|(c, _)| c)
+        .collect();
     out.sort_by(|a, b| {
         b.weight
             .partial_cmp(&a.weight)
@@ -577,6 +670,30 @@ pub fn parse_invesco_dng_json(body: &[u8], as_of_fallback: NaiveDate) -> Result<
 }
 
 // -- helpers --
+
+/// Whether a holdings line is a listed stock an index can contain.
+///
+/// Funds list other lines beside their stocks under the same asset class:
+/// cash and money-market sweeps, index futures, earnout and derivative lines
+/// (whose tickers carry digits or underscores, e.g. `RTYZ6`, `2602335D`,
+/// `CASH_USD`), and contingent value rights, escrow and private-placement
+/// lines, which keep a stock-like ticker and say what they are in the name
+/// (`AKERO THERAPEUTICS CVR`, `TRINSEO PLC Prvt`). A listed US ticker is
+/// letters, with at most one share-class separator (`BRK.B`, `MOG A`).
+fn is_listed_stock(ticker: Option<&str>, name: &str) -> bool {
+    let ticker_ok = ticker.is_none_or(|t| {
+        let parts: Vec<&str> = t.split(['.', '/', ' ']).collect();
+        parts.len() <= 2
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_uppercase()))
+    });
+    let name = name.trim_end().to_ascii_uppercase();
+    ticker_ok
+        && ![" CVR", " PRVT", " ESCROW"]
+            .iter()
+            .any(|s| name.ends_with(s))
+}
 
 fn extract_ishares_date(line: &str) -> Option<NaiveDate> {
     // Matches lines like: "Fund Holdings as of","Mar 15, 2024"
@@ -781,6 +898,8 @@ fn parse_csv_row(line: &str) -> Vec<String> {
 ///
 /// Numeric cells on the sheet sometimes arrive as strings with thousand
 /// separators (`"1,234.56"`); the parser strips commas before parsing.
+/// Only listed stocks are kept: the cash, future, earnout and derivative lines
+/// the sheet also carries are dropped.
 /// Empty/zero shares rows are kept (they appear when a name is being
 /// removed end-of-day) so the diff layer can detect membership exits.
 pub fn parse_spdr_xlsx(bytes: &[u8], as_of_fallback: NaiveDate) -> Result<Vec<Constituent>> {
@@ -869,12 +988,14 @@ pub fn parse_spdr_xlsx(bytes: &[u8], as_of_fallback: NaiveDate) -> Result<Vec<Co
             Some(Data::String(s)) => s.trim().to_string(),
             _ => continue,
         };
-        if ticker.is_empty() || ticker == "-" {
-            continue;
-        }
-        // Skip non-equity sub-totals / cash placeholders. SPDR DIA
-        // currently lists "USD" with empty asset class; ignore it.
-        if ticker.eq_ignore_ascii_case("USD") || ticker.eq_ignore_ascii_case("CASH") {
+        // Cash, futures, earnouts and rights share the sheet with the stocks.
+        // `CASH` itself is a ticker (Pathward Financial, an S&P 600 member);
+        // the cash lines are `-` or `CASH_USD`.
+        let name_cell = match row.get(c_name) {
+            Some(Data::String(s)) => s.trim(),
+            _ => "",
+        };
+        if !is_listed_stock(Some(&ticker), name_cell) {
             continue;
         }
         if let Some(c) = col_asset {
@@ -1023,6 +1144,7 @@ Ticker,Name,Type,Sector,Asset Class,Market Value,Notional Value,Quantity,Price,L
 \"VSAT\",\"VIASAT INC\",\"EQUITY\",\"Information Technology\",\"Equity\",\"1,050,000,000.00\",\"1,050,000,000.00\",\"20,000,000.00\",\"52.50\",\"United States\",\"NASDAQ\",\"USD\",\"1.00\",\"USD\",\"-\",\"0.66\",\"0.66\"\n\
 \"JXN\",\"JACKSON FINANCIAL CLASS A\",\"EQUITY\",\"Financials\",\"Equity\",\"900,000,000.00\",\"900,000,000.00\",\"9,000,000.00\",\"100.00\",\"United States\",\"NYSE\",\"USD\",\"1.00\",\"USD\",\"-\",\"0.57\",\"0.57\"\n\
 \"JXN\",\"JACKSON FINANCIAL CLASS A\",\"SWAP\",\"Financials\",\"Equity\",\"0.00\",\"12,000,000.00\",\"120,000.00\",\"100.00\",\"United States\",\"-\",\"USD\",\"1.00\",\"USD\",\"-\",\"-\",\"0.01\"\n\
+\"FG\",\"F&G ANNUITIES AND LIFE INC\",\"SWAP\",\"Financials\",\"Equity\",\"0.00\",\"80,000,000.00\",\"2,000,000.00\",\"40.00\",\"United States\",\"-\",\"USD\",\"1.00\",\"USD\",\"-\",\"-\",\"0.05\"\n\
 \"XTSLA\",\"BLK CSH FND TREASURY SL AGENCY\",\"STIF\",\"Cash and/or Derivatives\",\"Money Market\",\"0.78\",\"-43,991,966.67\",\"1.00\",\"1.00\",\"United States\",\"-\",\"USD\",\"1.00\",\"USD\",\"-\",\"-\",\"-0.04\"\n";
         let rows = parse_ishares_csv(
             csv,
@@ -1031,19 +1153,25 @@ Ticker,Name,Type,Sector,Asset Class,Market Value,Notional Value,Quantity,Price,L
         )
         .unwrap();
         let tickers: Vec<_> = rows.iter().filter_map(|r| r.ticker.as_deref()).collect();
-        assert_eq!(tickers, ["VSAT", "JXN"]);
+        // JXN's swap repeats its stock line; FG is held only through a swap
+        // and is still a member, weighted by its notional.
+        assert_eq!(tickers, ["VSAT", "JXN", "FG"]);
         assert!((rows[0].weight - 0.0066).abs() < 1e-9);
+        assert!((rows[2].weight - 0.0005).abs() < 1e-9);
         assert_eq!(rows[0].cusip, "");
         assert_eq!(rows[0].as_of, NaiveDate::from_ymd_opt(2026, 9, 21).unwrap());
     }
 
-    /// IWM's export has no `Type` column; an unlisted line with no ticker
-    /// and no identifier cannot be joined and is dropped.
+    /// IWM's export has no `Type` column. Its unlisted lines and contingent
+    /// value rights are not members, and a line with no ticker and no
+    /// identifier cannot be joined.
     #[test]
     fn parse_ishares_latest_holdings_drops_unidentifiable_rows() {
         let csv = "Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Quantity,Price,Location,Exchange,Currency,FX Rate,Market Currency,Accrual Date\n\
 \"TWST\",\"TWIST BIOSCIENCE\",\"Health Care\",\"Equity\",\"276,882,702.74\",\"0.36\",\"276,882,702.74\",\"1,669,678.00\",\"165.83\",\"United States\",\"NASDAQ\",\"USD\",\"1.00\",\"USD\",\"-\"\n\
-\"-\",\"OMNIAB INC $12.50 VESTING Prvt\",\"Health Care\",\"Equity\",\"1.31\",\"0.00\",\"1.31\",\"130,676.00\",\"0.00\",\"United States\",\"NO MARKET (E.G. UNLISTED)\",\"USD\",\"1.00\",\"USD\",\"-\"\n";
+\"-\",\"OMNIAB INC $12.50 VESTING Prvt\",\"Health Care\",\"Equity\",\"1.31\",\"0.00\",\"1.31\",\"130,676.00\",\"0.00\",\"United States\",\"NO MARKET (E.G. UNLISTED)\",\"USD\",\"1.00\",\"USD\",\"-\"\n\
+\"ADRO\",\"CHINOOK THERAPEUTICS INC\",\"Health Care\",\"Equity\",\"223,817.75\",\"0.00\",\"223,817.75\",\"1,678,712.00\",\"0.13\",\"United States\",\"NO MARKET (E.G. UNLISTED)\",\"USD\",\"1.00\",\"USD\",\"-\"\n\
+\"AKE\",\"AKERO THERAPEUTICS CVR\",\"Health Care\",\"Equity\",\"1,125,266.35\",\"0.00\",\"1,125,266.35\",\"1,731,179.00\",\"0.65\",\"United States\",\"NASDAQ\",\"USD\",\"1.00\",\"USD\",\"-\"\n";
         let rows = parse_ishares_csv(
             csv,
             NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
@@ -1106,10 +1234,9 @@ Ticker,Name,Type,Sector,Asset Class,Market Value,Notional Value,Quantity,Price,L
             )
             .mount(&server)
             .await;
-        let holdings = "Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Quantity\n\
-\"AAPL\",\"APPLE INC\",\"IT\",\"Equity\",\"1,000.00\",\"7.12\",\"10.00\"\n";
+        let holdings = ishares_file(30);
         Mock::given(path("/backup"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(holdings))
+            .respond_with(ResponseTemplate::new(200).set_body_string(holdings.clone()))
             .mount(&server)
             .await;
 
@@ -1121,10 +1248,56 @@ Ticker,Name,Type,Sector,Asset Class,Market Value,Notional Value,Quantity,Price,L
         ];
         let (_, body) = SponsorClient::new()
             .unwrap()
-            .fetch_first(IndexId::Sp400, &endpoints)
+            .fetch_first(IndexId::Dji, &endpoints)
             .await
             .unwrap();
         assert_eq!(body.as_ref(), holdings.as_bytes());
+    }
+
+    /// A well-formed file that lists only part of the index, such as a
+    /// product page's top-ten view, is not the day's holdings.
+    #[tokio::test]
+    async fn fetch_falls_through_a_partial_file_to_the_backup() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/top10"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ishares_file(10)))
+            .mount(&server)
+            .await;
+        Mock::given(path("/full"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ishares_file(30)))
+            .mount(&server)
+            .await;
+        let top10 = format!("{}/top10", server.uri());
+        let full = format!("{}/full", server.uri());
+        let endpoints = [
+            (DataSource::IsharesCdn, "T", top10.as_str()),
+            (DataSource::IsharesCdn, "F", full.as_str()),
+        ];
+        let (_, body) = SponsorClient::new()
+            .unwrap()
+            .fetch_first(IndexId::Dji, &endpoints)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), ishares_file(30).as_bytes());
+    }
+
+    /// An iShares holdings file listing `n` stocks.
+    fn ishares_file(n: usize) -> String {
+        let mut csv =
+            String::from("Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Quantity\n");
+        for i in 0..n {
+            let t: String = [b'A' + (i / 26) as u8, b'A' + (i % 26) as u8]
+                .iter()
+                .map(|&b| b as char)
+                .collect();
+            csv.push_str(&format!(
+                "\"{t}\",\"CO {t}\",\"IT\",\"Equity\",\"1.00\",\"1.00\",\"1.00\"\n"
+            ));
+        }
+        csv
     }
 
     #[test]
@@ -1323,20 +1496,37 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
 
     #[test]
     fn parse_spdr_xlsx_filters_cash_pseudo_tickers() {
-        // The DIA sample has a "USD" cash row in the trailing rows. The
-        // parser must drop it.
+        // The DIA sample ends with a `US DOLLAR` cash line; only the 30
+        // stocks may come back.
         let bytes = include_bytes!("../tests/fixtures/spdr_dia_sample.xlsx");
         let fallback = NaiveDate::from_ymd_opt(2026, 4, 28).unwrap();
         let rows = parse_spdr_xlsx(bytes, fallback).unwrap();
-        assert!(
-            !rows.iter().any(|r| {
-                r.ticker
-                    .as_deref()
-                    .map(|t| t.eq_ignore_ascii_case("USD") || t.eq_ignore_ascii_case("CASH"))
-                    .unwrap_or(false)
-            }),
-            "USD/CASH pseudo-ticker leaked through filter"
-        );
+        assert_eq!(rows.len(), 30);
+        assert!(!rows.iter().any(|r| r.name.contains("DOLLAR")));
+    }
+
+    /// Lines taken from the live SPY, SPSM, MDY and IWM files on 2026-09-23.
+    #[test]
+    fn only_listed_stocks_count_as_holdings() {
+        for (ticker, name) in [
+            ("CASH", "PATHWARD FINANCIAL INC"),
+            ("BRK.B", "BERKSHIRE HATHAWAY INC CL B"),
+            ("MOG A", "MOOG INC CLASS A"),
+            ("CVI", "CVR ENERGY INC"),
+        ] {
+            assert!(is_listed_stock(Some(ticker), name), "{ticker} {name}");
+        }
+        for (ticker, name) in [
+            ("RTYZ6", "E-MINI RUSS 2000  DEC26"),
+            ("2602335D", "TPG INC"),
+            ("CASH_USD", "U.S. Dollar"),
+            ("P5N994", "Petrocorp Inc Escrow"),
+            ("AKE", "AKERO THERAPEUTICS CVR"),
+            ("GTXI", "GTXI INC - CVR"),
+            ("TSE", "TRINSEO PLC Prvt"),
+        ] {
+            assert!(!is_listed_stock(Some(ticker), name), "{ticker} {name}");
+        }
     }
 
     #[test]
