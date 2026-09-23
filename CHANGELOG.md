@@ -68,6 +68,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`quick-xml` 0.41 and `calamine` 0.36** clear RUSTSEC-2026-0194
+  (quadratic duplicate-attribute check) and RUSTSEC-2026-0195
+  (unbounded namespace declarations in `NsReader`), which failed the
+  nightly security sweep.
 - **NDX daily ingest restored.** The legacy Invesco URL
   (`invesco.com/us/financial-products/etfs/holdings/main/holdings/0?
   action=download&ticker=QQQ`) was retired in 2026-Q1 -- it now returns
