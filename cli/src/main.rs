@@ -30,7 +30,7 @@ use indexkit::github_mirror::{
 use indexkit::nport::holdings_to_constituents;
 use indexkit::parquet_io::{read_month, write_month};
 use indexkit::sec::SecClient;
-use indexkit::sponsor::{parse_holdings, sponsor_urls, SponsorClient};
+use indexkit::sponsor::{parse_holdings, retired_sponsor_urls, sponsor_urls, SponsorClient};
 use indexkit::types::DataSource;
 use indexkit::wayback::WaybackClient;
 use indexkit::{Constituent, IndexId, YearMonth};
@@ -387,7 +387,12 @@ async fn cmd_wayback_backfill(
     let to_yyyymmdd = to_nd.format("%Y%m%d").to_string();
 
     for idx in indices {
-        let endpoints = sponsor_urls(idx);
+        // Captures of a retired URL hold the files it served before it was
+        // replaced, so both lists are searched.
+        let endpoints: Vec<_> = sponsor_urls(idx)
+            .into_iter()
+            .chain(retired_sponsor_urls(idx))
+            .collect();
         if endpoints.is_empty() {
             continue;
         }
