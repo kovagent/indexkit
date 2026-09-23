@@ -7,7 +7,7 @@ on:
         required: false
         default: "2019-11"
       index:
-        description: "Restrict to one index id (sp500, sp400, sp600, ndx, dji) -- leave blank for all"
+        description: "Restrict to one index id (sp500, sp400, sp600, ndx, dji, rut) -- leave blank for all"
         required: false
 
 jobs:
