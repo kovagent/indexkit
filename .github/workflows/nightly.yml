@@ -22,13 +22,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --release --bin indexkit-cli
+      # Each fetch step may fail on its own without stopping the others, so
+      # whatever did arrive is committed. The last step then fails the run,
+      # so a source that stopped answering shows up as a red nightly.
       - name: SEC N-PORT nightly walk
+        id: nport
         run: ./target/release/indexkit-cli nightly-append
         continue-on-error: true
       - name: Sponsor CDN daily fetch
+        id: sponsor
         run: ./target/release/indexkit-cli daily-fetch --accept-sponsor-tos
         continue-on-error: true
       - name: GitHub mirrors sync
+        id: mirrors
         run: ./target/release/indexkit-cli github-backfill
         continue-on-error: true
       - name: Regenerate manifest
@@ -51,3 +57,8 @@ jobs:
           else
             echo "no changes to commit"
           fi
+      - name: Fail the run if a fetch step failed
+        if: steps.nport.outcome == 'failure' || steps.sponsor.outcome == 'failure' || steps.mirrors.outcome == 'failure'
+        run: |
+          echo "::error::N-PORT: ${{ steps.nport.outcome }}, sponsor: ${{ steps.sponsor.outcome }}, mirrors: ${{ steps.mirrors.outcome }}. Data from the steps that succeeded was committed."
+          exit 1
