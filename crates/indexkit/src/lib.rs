@@ -1,7 +1,7 @@
 //! `indexkit` -- index constituent service for Rust.
 //!
 //! Daily and monthly snapshots of the S&P 500, S&P MidCap 400, S&P SmallCap
-//! 600, Nasdaq-100, and Dow Jones Industrial Average, served from bundled
+//! 600, Nasdaq-100, Dow Jones Industrial Average, and Russell 2000, served from bundled
 //! parquet files with runtime fetch and local cache. No API keys. Offline
 //! after the first successful fetch.
 //!
@@ -32,7 +32,7 @@
 //! - [`YearMonth`] -- year-month newtype; accepts strings, integers, tuples.
 //! - [`Constituent`] -- one holding.
 //! - [`IndexSnapshot`] -- constituents + metadata for one month.
-//! - [`IndexId`] -- typed index identifier (Sp500, Sp400, Sp600, Ndx, Dji).
+//! - [`IndexId`] -- typed index identifier (Sp500, Sp400, Sp600, Ndx, Dji, Rut).
 //! - [`Error`] -- unified error type; match on this, never on sub-types.
 //!
 //! # Environment overrides
@@ -133,7 +133,28 @@ pub async fn constituents_for(id: IndexId, ym: impl IntoYearMonth) -> Result<Vec
     global_client().constituents_by_id(id, ym).await
 }
 
-/// Latest S&P 500 snapshot (uses shared global client).
+/// Newest snapshot of any index (uses shared global client).
+///
+/// Every row dated the most recent day with data, with tickers wherever the
+/// day came from a sponsor holdings file. See [`Indexkit::latest`].
+///
+/// # Example
+///
+/// ```no_run
+/// use indexkit::IndexId;
+///
+/// #[tokio::main]
+/// async fn main() -> indexkit::Result<()> {
+///     let snap = indexkit::latest(IndexId::Sp600).await?;
+///     println!("{} names on {}", snap.constituents.len(), snap.date);
+///     Ok(())
+/// }
+/// ```
+pub async fn latest(id: IndexId) -> Result<DailySnapshot> {
+    global_client().latest(id).await
+}
+
+/// Latest S&P 500 snapshot: the newest day only (uses shared global client).
 ///
 /// # Example
 ///
@@ -149,10 +170,7 @@ pub async fn sp500_latest() -> Result<Vec<Constituent>> {
     global_client().sp500_latest().await
 }
 
-/// Latest S&P 500 ticker list (uses shared global client).
-///
-/// Always returns an empty vector in v1.0 because N-PORT does not include
-/// ticker symbols; retained for API compatibility with downstream consumers.
+/// Tickers of the newest S&P 500 snapshot (uses shared global client).
 ///
 /// # Example
 ///
@@ -168,12 +186,12 @@ pub async fn sp500_tickers_latest() -> Result<Vec<String>> {
     Ok(cs.into_iter().filter_map(|c| c.ticker).collect())
 }
 
-/// Latest Nasdaq-100 snapshot (uses shared global client).
+/// Latest Nasdaq-100 snapshot: the newest day only (uses shared global client).
 pub async fn ndx_latest() -> Result<Vec<Constituent>> {
     global_client().ndx_latest().await
 }
 
-/// Latest DJIA snapshot (uses shared global client).
+/// Latest DJIA snapshot: the newest day only (uses shared global client).
 pub async fn dji_latest() -> Result<Vec<Constituent>> {
     global_client().dji_latest().await
 }

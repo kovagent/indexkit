@@ -185,9 +185,9 @@ impl Indexkit {
         self.constituents_by_id(IndexId::Sp500, ym).await
     }
 
-    /// S&P 500 latest available snapshot.
+    /// S&P 500 latest available snapshot: the newest day only (see [`latest`][Self::latest]).
     pub async fn sp500_latest(&self) -> Result<Vec<Constituent>> {
-        self.latest(IndexId::Sp500).await
+        Ok(self.latest(IndexId::Sp500).await?.constituents)
     }
 
     /// S&P 500 snapshots for every month in `[start, end]` (inclusive).
@@ -204,9 +204,9 @@ impl Indexkit {
         self.constituents_by_id(IndexId::Sp400, ym).await
     }
 
-    /// S&P 400 latest available.
+    /// S&P 400 latest available: the newest day only (see [`latest`][Self::latest]).
     pub async fn sp400_latest(&self) -> Result<Vec<Constituent>> {
-        self.latest(IndexId::Sp400).await
+        Ok(self.latest(IndexId::Sp400).await?.constituents)
     }
 
     /// S&P 400 snapshots for every month in `[start, end]`.
@@ -223,9 +223,9 @@ impl Indexkit {
         self.constituents_by_id(IndexId::Sp600, ym).await
     }
 
-    /// S&P 600 latest available.
+    /// S&P 600 latest available: the newest day only (see [`latest`][Self::latest]).
     pub async fn sp600_latest(&self) -> Result<Vec<Constituent>> {
-        self.latest(IndexId::Sp600).await
+        Ok(self.latest(IndexId::Sp600).await?.constituents)
     }
 
     /// S&P 600 snapshots for every month in `[start, end]`.
@@ -242,9 +242,9 @@ impl Indexkit {
         self.constituents_by_id(IndexId::Ndx, ym).await
     }
 
-    /// Nasdaq-100 latest available.
+    /// Nasdaq-100 latest available: the newest day only (see [`latest`][Self::latest]).
     pub async fn ndx_latest(&self) -> Result<Vec<Constituent>> {
-        self.latest(IndexId::Ndx).await
+        Ok(self.latest(IndexId::Ndx).await?.constituents)
     }
 
     /// Nasdaq-100 snapshots for every month in `[start, end]`.
@@ -261,9 +261,9 @@ impl Indexkit {
         self.constituents_by_id(IndexId::Dji, ym).await
     }
 
-    /// DJIA latest available.
+    /// DJIA latest available: the newest day only (see [`latest`][Self::latest]).
     pub async fn dji_latest(&self) -> Result<Vec<Constituent>> {
-        self.latest(IndexId::Dji).await
+        Ok(self.latest(IndexId::Dji).await?.constituents)
     }
 
     /// DJIA snapshots for every month in `[start, end]`.
@@ -275,14 +275,56 @@ impl Indexkit {
         self.range(IndexId::Dji, start, end).await
     }
 
+    /// The newest snapshot of any index: every row dated the most recent day
+    /// in the most recent month that has data, searching back from the
+    /// current month up to six months.
+    ///
+    /// A month file holds every day fetched that month, so returning the
+    /// month would also return members that left before its last day.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::SnapshotNotFound`] if none of those months has data.
+    /// - Network errors with no cached file, rather than an older month.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use indexkit::{Indexkit, IndexId};
+    /// # async fn run() -> indexkit::Result<()> {
+    /// let snap = Indexkit::new().latest(IndexId::Sp400).await?;
+    /// let tickers: Vec<&str> = snap.constituents.iter().filter_map(|c| c.ticker.as_deref()).collect();
+    /// println!("S&P 400 on {}: {} names", snap.date, tickers.len());
+    /// # Ok(()) }
+    /// ```
+    pub async fn latest(&self, id: IndexId) -> Result<DailySnapshot> {
+        let mut ym = YearMonth::current_utc();
+        for _ in 0..7 {
+            match self.load_month(id, ym).await {
+                Ok(rows) => {
+                    if let Some(date) = rows.iter().map(|r| r.as_of).max() {
+                        let newest = rows.into_iter().filter(|r| r.as_of == date).collect();
+                        return Ok(day_snapshot(id, date, newest));
+                    }
+                }
+                Err(Error::SnapshotNotFound { .. }) => {}
+                Err(e) => return Err(e),
+            }
+            ym = ym.prev();
+        }
+        Err(Error::SnapshotNotFound {
+            index: id.to_string(),
+            year_month: "latest".to_string(),
+        })
+    }
+
     // ---- helpers ----
 
-    /// Tickers for an index at a month. Since N-PORT does not include ticker,
-    /// this returns the ticker field from the parquet row (always empty in
-    /// v1.0); use CUSIP as the join key instead.
+    /// Tickers for an index at a month, from the rows that carry one.
     ///
-    /// Reserved for when a future version derives tickers from a
-    /// CUSIP -> ticker map.
+    /// Rows from sponsor holdings files carry a ticker; N-PORT rows do not,
+    /// so a month served only from N-PORT yields none. Use CUSIP as the join
+    /// key for those.
     pub async fn tickers(&self, index: &str, ym: impl IntoYearMonth) -> Result<Vec<String>> {
         let cs = self.constituents(index, ym).await?;
         Ok(cs.into_iter().filter_map(|c| c.ticker).collect())
@@ -389,27 +431,10 @@ impl Indexkit {
         for r in flat {
             by_day.entry(r.as_of).or_default().push(r);
         }
-        let mut out = Vec::new();
-        for (date, mut rows) in by_day {
-            rows.sort_by(|a, b| {
-                b.weight
-                    .partial_cmp(&a.weight)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            // All rows on the same date should share a source (coalesce runs
-            // at write time). Take whichever source the first row reports.
-            let source = rows
-                .first()
-                .map(|r| r.source.clone())
-                .unwrap_or(crate::types::DataSource::SecNport);
-            out.push(DailySnapshot {
-                index: id,
-                date,
-                constituents: rows,
-                source,
-            });
-        }
-        Ok(out)
+        Ok(by_day
+            .into_iter()
+            .map(|(date, rows)| day_snapshot(id, date, rows))
+            .collect())
     }
 
     // -- index-specific daily sugar --
@@ -498,6 +523,11 @@ impl Indexkit {
         block(self.sp500(ym))
     }
 
+    /// Blocking variant of [`latest`][Self::latest].
+    pub fn latest_blocking(&self, id: IndexId) -> Result<DailySnapshot> {
+        block(self.latest(id))
+    }
+
     /// Blocking variant of [`sp500_latest`][Self::sp500_latest].
     pub fn sp500_latest_blocking(&self) -> Result<Vec<Constituent>> {
         block(self.sp500_latest())
@@ -546,22 +576,6 @@ impl Indexkit {
         };
         let tmp = write_bytes_to_tempfile(&bytes)?;
         read_month(tmp.path())
-    }
-
-    /// Find the most recent month available (searching backward from current
-    /// month up to 6 months).
-    async fn latest(&self, id: IndexId) -> Result<Vec<Constituent>> {
-        let mut ym = YearMonth::current_utc();
-        for _ in 0..7 {
-            match self.load_month(id, ym).await {
-                Ok(v) if !v.is_empty() => return Ok(v),
-                _ => ym = ym.prev(),
-            }
-        }
-        Err(Error::SnapshotNotFound {
-            index: id.to_string(),
-            year_month: "latest".to_string(),
-        })
     }
 
     async fn range(
@@ -621,6 +635,27 @@ impl Default for Indexkit {
     }
 }
 
+/// One day's rows as a [`DailySnapshot`], heaviest first.
+fn day_snapshot(id: IndexId, date: NaiveDate, mut rows: Vec<Constituent>) -> DailySnapshot {
+    rows.sort_by(|a, b| {
+        b.weight
+            .partial_cmp(&a.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    // All rows on the same date should share a source (coalesce runs at
+    // write time). Take whichever source the first row reports.
+    let source = rows
+        .first()
+        .map(|r| r.source.clone())
+        .unwrap_or(crate::types::DataSource::SecNport);
+    DailySnapshot {
+        index: id,
+        date,
+        constituents: rows,
+        source,
+    }
+}
+
 fn block<F: std::future::Future<Output = Result<T>>, T>(fut: F) -> Result<T> {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
@@ -651,6 +686,124 @@ mod tests {
         let ym = YearMonth::new(2024, 1).unwrap();
         let k = Indexkit::key_for(IndexId::Sp500, ym);
         assert_eq!(k, "sp500/sp500-2024-01");
+    }
+
+    fn row(ticker: &str, as_of: NaiveDate) -> Constituent {
+        Constituent {
+            ticker: Some(ticker.into()),
+            name: ticker.into(),
+            cusip: String::new(),
+            lei: None,
+            shares: 1.0,
+            market_value_usd: 1.0,
+            weight: 0.01,
+            issuer_cik: None,
+            sector: None,
+            as_of,
+            source: crate::types::DataSource::SpdrCdn,
+        }
+    }
+
+    /// A mock origin serving `rows` as `id`'s parquet for `ym`, and a client
+    /// pointed at it with no mirror and an empty cache.
+    async fn serve_month(
+        server: &wiremock::MockServer,
+        id: IndexId,
+        ym: YearMonth,
+        rows: &[Constituent],
+    ) {
+        let dir = tempfile::TempDir::new().unwrap();
+        crate::parquet_io::write_month(dir.path(), id.as_str(), &ym.to_string(), rows).unwrap();
+        let bytes = std::fs::read(
+            dir.path()
+                .join(format!("{}.parquet", Indexkit::key_for(id, ym))),
+        )
+        .unwrap();
+        wiremock::Mock::given(wiremock::matchers::path(format!(
+            "/{}.parquet",
+            Indexkit::key_for(id, ym)
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(bytes))
+        .mount(server)
+        .await;
+    }
+
+    fn client_for(server: &wiremock::MockServer, cache: &tempfile::TempDir) -> Indexkit {
+        Indexkit::new()
+            .with_base_url(server.uri())
+            .with_cache_dir(cache.path().to_path_buf())
+            .with_mirror_url(None)
+    }
+
+    /// A month holds every day fetched in it; a member that left mid-month
+    /// is on the earlier days only and must not come back as current.
+    #[tokio::test]
+    async fn latest_returns_only_the_newest_day() {
+        let server = wiremock::MockServer::start().await;
+        let ym = YearMonth::current_utc();
+        let day = |d| NaiveDate::from_ymd_opt(ym.year(), ym.month(), d).unwrap();
+        serve_month(
+            &server,
+            IndexId::Dji,
+            ym,
+            &[
+                row("AAA", day(1)),
+                row("LEFT", day(1)),
+                row("AAA", day(2)),
+                row("NEW", day(2)),
+            ],
+        )
+        .await;
+        let cache = tempfile::TempDir::new().unwrap();
+        let snap = client_for(&server, &cache)
+            .latest(IndexId::Dji)
+            .await
+            .unwrap();
+        assert_eq!(snap.date, day(2));
+        let mut tickers: Vec<_> = snap
+            .constituents
+            .iter()
+            .filter_map(|c| c.ticker.as_deref())
+            .collect();
+        tickers.sort_unstable();
+        assert_eq!(tickers, ["AAA", "NEW"]);
+    }
+
+    /// Before the first fetch of a month there is no file for it yet.
+    #[tokio::test]
+    async fn latest_walks_back_past_a_missing_month() {
+        let server = wiremock::MockServer::start().await;
+        let prev = YearMonth::current_utc().prev();
+        let d = NaiveDate::from_ymd_opt(prev.year(), prev.month(), 3).unwrap();
+        serve_month(&server, IndexId::Rut, prev, &[row("IWM1", d)]).await;
+        let cache = tempfile::TempDir::new().unwrap();
+        let snap = client_for(&server, &cache)
+            .latest(IndexId::Rut)
+            .await
+            .unwrap();
+        assert_eq!(snap.date, d);
+        assert_eq!(snap.constituents.len(), 1);
+    }
+
+    /// An origin failure is an error, not a reason to answer with an older
+    /// month as if it were the newest.
+    #[tokio::test]
+    async fn latest_does_not_fall_back_to_an_older_month_on_failure() {
+        let server = wiremock::MockServer::start().await;
+        let ym = YearMonth::current_utc();
+        wiremock::Mock::given(wiremock::matchers::path(format!(
+            "/{}.parquet",
+            Indexkit::key_for(IndexId::Sp400, ym)
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+        let prev = ym.prev();
+        let d = NaiveDate::from_ymd_opt(prev.year(), prev.month(), 3).unwrap();
+        serve_month(&server, IndexId::Sp400, prev, &[row("OLD", d)]).await;
+        let cache = tempfile::TempDir::new().unwrap();
+        let res = client_for(&server, &cache).latest(IndexId::Sp400).await;
+        assert!(res.is_err(), "served an older month instead: {res:?}");
     }
 
     #[test]
