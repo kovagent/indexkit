@@ -104,8 +104,9 @@ pub fn entry_for(index: IndexId) -> CikEntry {
             ticker: "IWM".into(),
             name: "iShares Russell 2000 ETF".into(),
             trust_cik: "0001100663".into(),
-            // iShares Trust master CIK; IWM has its own series.
-            series_id: Some("S000004361".into()),
+            // iShares Trust master CIK; IWM has its own series. Per SEC's
+            // company_tickers_mf.json (IWM -> S000004344, class C000012074).
+            series_id: Some("S000004344".into()),
         },
     }
 }
