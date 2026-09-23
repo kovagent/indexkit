@@ -30,10 +30,7 @@ use indexkit::github_mirror::{
 use indexkit::nport::holdings_to_constituents;
 use indexkit::parquet_io::{read_month, write_month};
 use indexkit::sec::SecClient;
-use indexkit::sponsor::{
-    parse_invesco_csv, parse_ishares_csv, parse_nasdaq_ndx_json, parse_spdr_xlsx, sponsor_urls,
-    SponsorClient,
-};
+use indexkit::sponsor::{parse_holdings, sponsor_urls, SponsorClient};
 use indexkit::types::DataSource;
 use indexkit::wayback::WaybackClient;
 use indexkit::{Constituent, IndexId, YearMonth};
@@ -65,7 +62,7 @@ struct Cli {
 enum Command {
     /// Backfill historical N-PORT filings (monthly baseline).
     Backfill {
-        /// Restrict to one index id (sp500, sp400, sp600, ndx, dji).
+        /// Restrict to one index id (sp500, sp400, sp600, ndx, dji, rut).
         #[arg(long)]
         index: Option<String>,
 
@@ -349,27 +346,7 @@ async fn fetch_sponsor_one(
     ym: YearMonth,
 ) -> Result<usize> {
     let (source, body) = client.fetch_today(idx).await?;
-
-    let rows: Vec<Constituent> = match source {
-        DataSource::IsharesCdn => {
-            let text = std::str::from_utf8(&body)
-                .map_err(|e| anyhow::anyhow!("iShares response not UTF-8: {e}"))?;
-            parse_ishares_csv(text, today, source.clone())?
-        }
-        DataSource::InvescoCdn => {
-            let text = std::str::from_utf8(&body)
-                .map_err(|e| anyhow::anyhow!("Invesco response not UTF-8: {e}"))?;
-            parse_invesco_csv(text, today)?
-        }
-        DataSource::SpdrCdn => parse_spdr_xlsx(&body, today)?,
-        DataSource::NasdaqApi => parse_nasdaq_ndx_json(&body, today)?,
-        _ => return Err(anyhow::anyhow!("unexpected source {source:?}")),
-    };
-    if rows.is_empty() {
-        return Err(anyhow::anyhow!(
-            "sponsor CSV parsed to zero rows (format changed?)"
-        ));
-    }
+    let rows = parse_holdings(&source, &body, today)?;
 
     let old = existing_rows(data_dir, idx.as_str(), ym);
     let merged = coalesce(vec![old, rows.clone()]);
@@ -430,54 +407,14 @@ async fn cmd_wayback_backfill(
                         continue;
                     }
                 };
-                let tag = DataSource::Wayback(m.timestamp[..8].to_string());
-                let rows = match source {
-                    DataSource::IsharesCdn => {
-                        let Ok(text) = std::str::from_utf8(&body) else {
-                            continue;
-                        };
-                        match parse_ishares_csv(text, d, tag) {
-                            Ok(r) => r,
-                            Err(_) => continue,
-                        }
-                    }
-                    DataSource::InvescoCdn => {
-                        let Ok(text) = std::str::from_utf8(&body) else {
-                            continue;
-                        };
-                        match parse_invesco_csv(text, d) {
-                            Ok(mut r) => {
-                                for row in &mut r {
-                                    row.source = DataSource::Wayback(m.timestamp[..8].to_string());
-                                }
-                                r
-                            }
-                            Err(_) => continue,
-                        }
-                    }
-                    DataSource::SpdrCdn => match parse_spdr_xlsx(&body, d) {
-                        Ok(mut r) => {
-                            for row in &mut r {
-                                row.source = DataSource::Wayback(m.timestamp[..8].to_string());
-                            }
-                            r
-                        }
-                        Err(_) => continue,
-                    },
-                    DataSource::NasdaqApi => match parse_nasdaq_ndx_json(&body, d) {
-                        Ok(mut r) => {
-                            for row in &mut r {
-                                row.source = DataSource::Wayback(m.timestamp[..8].to_string());
-                            }
-                            r
-                        }
-                        Err(_) => continue,
-                    },
-                    _ => continue,
+                let Ok(mut rows) = parse_holdings(&source, &body, d) else {
+                    continue;
                 };
-                if !rows.is_empty() {
-                    by_month.entry(ym).or_default().extend(rows);
+                let tag = DataSource::Wayback(m.timestamp[..8].to_string());
+                for row in &mut rows {
+                    row.source = tag.clone();
                 }
+                by_month.entry(ym).or_default().extend(rows);
             }
         }
 

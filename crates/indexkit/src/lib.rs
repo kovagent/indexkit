@@ -95,7 +95,9 @@ pub use date::{IntoYearMonth, YearMonth, YearMonthError};
 pub use error::{Error, IndexkitError, Result};
 pub use nport::{holdings_to_constituents, parse_nport, NportFiling, NportHeader, RawHolding};
 pub use sec::{FilingRef, SecClient};
-pub use sponsor::{parse_invesco_csv, parse_ishares_csv, SponsorClient};
+pub use sponsor::{
+    parse_holdings, parse_invesco_csv, parse_invesco_dng_json, parse_ishares_csv, SponsorClient,
+};
 pub use types::{
     Constituent, DailySnapshot, DataSource, IndexId, IndexSnapshot, Resolution, Sector,
 };
