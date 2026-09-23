@@ -7,9 +7,8 @@
 //! 3. Download and parse each filing's `primary_doc.xml`.
 //!
 //! SEC requires a descriptive User-Agent on all `data.sec.gov` requests.
-//! See <https://www.sec.gov/developer> for the policy. indexkit sets:
-//!
-//! `User-Agent: indexkit/1.0 (+https://github.com/userFRM/indexkit)`
+//! See <https://www.sec.gov/developer> for the policy. indexkit sends
+//! `<application> <contact-email>`, see [`SEC_USER_AGENT_DEFAULT`].
 //!
 //! SEC rate limit is 10 req/s per IP. The fetchers in this module insert a
 //! 100 ms sleep between calls for comfortable headroom.
@@ -28,7 +27,10 @@ use tokio::time::sleep;
 /// Override at runtime via the `INDEXKIT_SEC_USER_AGENT` environment variable
 /// (strongly recommended when running under CI -- set it to a reachable
 /// email you control).
-pub const SEC_USER_AGENT_DEFAULT: &str = "indexkit frederic.miesegaes@gmail.com";
+///
+/// The default carries a placeholder contact, which SEC's edge accepts; set
+/// the variable to a real address when running the backfill yourself.
+pub const SEC_USER_AGENT_DEFAULT: &str = "indexkit email@email.com";
 
 /// Resolve the User-Agent to use for SEC requests, honouring
 /// `INDEXKIT_SEC_USER_AGENT`.

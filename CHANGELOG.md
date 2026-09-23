@@ -45,6 +45,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- The default data origin and CDN mirror, the crate's repository link
+  and the request User-Agents point at `kovagent/indexkit`, where the
+  repository now lives. The old `userFRM` URLs only worked through
+  GitHub's and jsDelivr's transfer redirects.
+- The SEC User-Agent default carries a placeholder contact
+  (`indexkit email@email.com`) instead of a personal address. Set
+  `INDEXKIT_SEC_USER_AGENT` to a real one when running the backfill;
+  the workflows read it from the `CONTACT_EMAIL` secret.
+- The README coverage table states what the bundled data holds: S&P
+  400, S&P 600, Nasdaq-100 and Russell 2000 history is quarterly
+  regulatory holdings, not daily, and daily holdings with weights start
+  in 2026-04 (S&P 500, DJIA) or 2026-09 (the others).
 - `cli::cmd_daily_fetch` now invokes `parse_spdr_xlsx` for
   `DataSource::SpdrCdn` instead of returning the
   `"SPDR XLSX not parseable in v1.0"` error. DIA daily holdings are
