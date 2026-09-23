@@ -275,17 +275,24 @@ impl Indexkit {
         self.range(IndexId::Dji, start, end).await
     }
 
-    /// The newest snapshot of any index: every row dated the most recent day
-    /// in the most recent month that has data, searching back from the
-    /// current month up to six months.
+    /// The newest snapshot of any index: the most recent day from the most
+    /// authoritative source in the most recent month that has data,
+    /// searching back from the current month up to six months.
     ///
-    /// A month file holds every day fetched that month, so returning the
-    /// month would also return members that left before its last day.
+    /// A month file holds every day fetched that month from every source, so
+    /// the whole month would also return members that left before its last
+    /// day. See [`DataSource::priority`](crate::types::DataSource::priority)
+    /// for the order of sources.
+    ///
+    /// A month that cannot be fetched and is not cached (offline after a
+    /// month rollover, say) is passed over like a missing one, so the answer
+    /// can come from an older month; `date` says which day it is.
     ///
     /// # Errors
     ///
     /// - [`Error::SnapshotNotFound`] if none of those months has data.
-    /// - Network errors with no cached file, rather than an older month.
+    /// - The first fetch error, when a month failed and no older month
+    ///   answered either.
     ///
     /// # Example
     ///
@@ -298,24 +305,27 @@ impl Indexkit {
     /// # Ok(()) }
     /// ```
     pub async fn latest(&self, id: IndexId) -> Result<DailySnapshot> {
+        let today = chrono::Utc::now().date_naive();
         let mut ym = YearMonth::current_utc();
+        let mut failure = None;
         for _ in 0..7 {
             match self.load_month(id, ym).await {
                 Ok(rows) => {
-                    if let Some(date) = rows.iter().map(|r| r.as_of).max() {
-                        let newest = rows.into_iter().filter(|r| r.as_of == date).collect();
-                        return Ok(day_snapshot(id, date, newest));
+                    if let Some(snap) = newest_day(id, rows, today) {
+                        return Ok(snap);
                     }
                 }
                 Err(Error::SnapshotNotFound { .. }) => {}
-                Err(e) => return Err(e),
+                Err(e) => {
+                    failure.get_or_insert(e);
+                }
             }
             ym = ym.prev();
         }
-        Err(Error::SnapshotNotFound {
+        Err(failure.unwrap_or_else(|| Error::SnapshotNotFound {
             index: id.to_string(),
             year_month: "latest".to_string(),
-        })
+        }))
     }
 
     // ---- helpers ----
@@ -635,6 +645,34 @@ impl Default for Indexkit {
     }
 }
 
+/// A month's newest day from its most authoritative source, as of `today`.
+///
+/// A month file mixes sources: daily sponsor files, daily and monthly
+/// membership lists (a monthly list is stamped mid-month, which can be after
+/// today), Wayback captures and the quarterly filing. The newest date across
+/// all of them can land on a lower-priority list, or mix one with the sponsor
+/// file on the same day and bring back members the sponsor no longer holds.
+/// So the day is the newest one of the highest-priority source dated no later
+/// than today, and only that source's rows are returned.
+fn newest_day(id: IndexId, rows: Vec<Constituent>, today: NaiveDate) -> Option<DailySnapshot> {
+    let dated = |r: &Constituent| r.as_of <= today;
+    let tier = rows
+        .iter()
+        .filter(|r| dated(r))
+        .map(|r| r.source.priority())
+        .max()?;
+    let date = rows
+        .iter()
+        .filter(|r| dated(r) && r.source.priority() == tier)
+        .map(|r| r.as_of)
+        .max()?;
+    let day = rows
+        .into_iter()
+        .filter(|r| r.as_of == date && r.source.priority() == tier)
+        .collect();
+    Some(day_snapshot(id, date, day))
+}
+
 /// One day's rows as a [`DailySnapshot`], heaviest first.
 fn day_snapshot(id: IndexId, date: NaiveDate, mut rows: Vec<Constituent>) -> DailySnapshot {
     rows.sort_by(|a, b| {
@@ -642,8 +680,8 @@ fn day_snapshot(id: IndexId, date: NaiveDate, mut rows: Vec<Constituent>) -> Dai
             .partial_cmp(&a.weight)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    // All rows on the same date should share a source (coalesce runs at
-    // write time). Take whichever source the first row reports.
+    // Report the source of the heaviest row; a day can hold rows from more
+    // than one source.
     let source = rows
         .first()
         .map(|r| r.source.clone())
@@ -680,6 +718,7 @@ fn write_bytes_to_tempfile(bytes: &bytes::Bytes) -> Result<tempfile::NamedTempFi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::DataSource;
 
     #[test]
     fn key_for_format() {
@@ -688,7 +727,7 @@ mod tests {
         assert_eq!(k, "sp500/sp500-2024-01");
     }
 
-    fn row(ticker: &str, as_of: NaiveDate) -> Constituent {
+    fn row(ticker: &str, as_of: NaiveDate, source: DataSource) -> Constituent {
         Constituent {
             ticker: Some(ticker.into()),
             name: ticker.into(),
@@ -700,12 +739,71 @@ mod tests {
             issuer_cik: None,
             sector: None,
             as_of,
-            source: crate::types::DataSource::SpdrCdn,
+            source,
         }
     }
 
-    /// A mock origin serving `rows` as `id`'s parquet for `ym`, and a client
-    /// pointed at it with no mirror and an empty cache.
+    fn sept(d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 9, d).unwrap()
+    }
+
+    fn tickers(snap: &DailySnapshot) -> Vec<&str> {
+        let mut t: Vec<_> = snap
+            .constituents
+            .iter()
+            .filter_map(|c| c.ticker.as_deref())
+            .collect();
+        t.sort_unstable();
+        t
+    }
+
+    /// A member that left mid-month is on the earlier days only and must not
+    /// come back as current.
+    #[test]
+    fn newest_day_drops_members_that_left_earlier_in_the_month() {
+        let rows = vec![
+            row("AAA", sept(1), DataSource::SpdrCdn),
+            row("LEFT", sept(1), DataSource::SpdrCdn),
+            row("AAA", sept(2), DataSource::SpdrCdn),
+            row("NEW", sept(2), DataSource::SpdrCdn),
+        ];
+        let snap = newest_day(IndexId::Dji, rows, sept(23)).unwrap();
+        assert_eq!(snap.date, sept(2));
+        assert_eq!(tickers(&snap), ["AAA", "NEW"]);
+    }
+
+    /// The monthly membership list is stamped on the 15th from the first of
+    /// the month, and it outlives members the sponsor file has already
+    /// dropped. Neither its date nor its members may leak into the answer.
+    #[test]
+    fn newest_day_takes_the_sponsor_day_over_a_membership_list() {
+        let yfiua = || DataSource::GithubYfiua {
+            month: YearMonth::new(2026, 9).unwrap(),
+        };
+        let rows = vec![
+            row("AAA", sept(8), DataSource::SpdrCdn),
+            row("AAA", sept(9), DataSource::GithubFja05680),
+            row("OLD", sept(9), DataSource::GithubFja05680),
+            row("AAA", sept(15), yfiua()),
+            row("LEFT", sept(15), yfiua()),
+        ];
+        // Before the 15th the list is dated in the future.
+        let snap = newest_day(IndexId::Sp500, rows.clone(), sept(10)).unwrap();
+        assert_eq!((snap.date, tickers(&snap)), (sept(8), vec!["AAA"]));
+        // After it, the sponsor day still outranks the list.
+        let mut later = rows;
+        later.push(row("AAA", sept(15), DataSource::SpdrCdn));
+        let snap = newest_day(IndexId::Sp500, later, sept(22)).unwrap();
+        assert_eq!((snap.date, tickers(&snap)), (sept(15), vec!["AAA"]));
+    }
+
+    #[test]
+    fn newest_day_is_none_when_every_row_is_dated_after_today() {
+        let rows = vec![row("AAA", sept(15), DataSource::SpdrCdn)];
+        assert!(newest_day(IndexId::Ndx, rows, sept(10)).is_none());
+    }
+
+    /// A mock origin serving `rows` as `id`'s parquet for `ym`.
     async fn serve_month(
         server: &wiremock::MockServer,
         id: IndexId,
@@ -728,6 +826,7 @@ mod tests {
         .await;
     }
 
+    /// A client pointed at `server` with no mirror and an empty cache.
     fn client_for(server: &wiremock::MockServer, cache: &tempfile::TempDir) -> Indexkit {
         Indexkit::new()
             .with_base_url(server.uri())
@@ -735,38 +834,8 @@ mod tests {
             .with_mirror_url(None)
     }
 
-    /// A month holds every day fetched in it; a member that left mid-month
-    /// is on the earlier days only and must not come back as current.
-    #[tokio::test]
-    async fn latest_returns_only_the_newest_day() {
-        let server = wiremock::MockServer::start().await;
-        let ym = YearMonth::current_utc();
-        let day = |d| NaiveDate::from_ymd_opt(ym.year(), ym.month(), d).unwrap();
-        serve_month(
-            &server,
-            IndexId::Dji,
-            ym,
-            &[
-                row("AAA", day(1)),
-                row("LEFT", day(1)),
-                row("AAA", day(2)),
-                row("NEW", day(2)),
-            ],
-        )
-        .await;
-        let cache = tempfile::TempDir::new().unwrap();
-        let snap = client_for(&server, &cache)
-            .latest(IndexId::Dji)
-            .await
-            .unwrap();
-        assert_eq!(snap.date, day(2));
-        let mut tickers: Vec<_> = snap
-            .constituents
-            .iter()
-            .filter_map(|c| c.ticker.as_deref())
-            .collect();
-        tickers.sort_unstable();
-        assert_eq!(tickers, ["AAA", "NEW"]);
+    fn day_in(ym: YearMonth, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(ym.year(), ym.month(), d).unwrap()
     }
 
     /// Before the first fetch of a month there is no file for it yet.
@@ -774,21 +843,25 @@ mod tests {
     async fn latest_walks_back_past_a_missing_month() {
         let server = wiremock::MockServer::start().await;
         let prev = YearMonth::current_utc().prev();
-        let d = NaiveDate::from_ymd_opt(prev.year(), prev.month(), 3).unwrap();
-        serve_month(&server, IndexId::Rut, prev, &[row("IWM1", d)]).await;
+        serve_month(
+            &server,
+            IndexId::Rut,
+            prev,
+            &[row("IWM1", day_in(prev, 3), DataSource::IsharesCdn)],
+        )
+        .await;
         let cache = tempfile::TempDir::new().unwrap();
         let snap = client_for(&server, &cache)
             .latest(IndexId::Rut)
             .await
             .unwrap();
-        assert_eq!(snap.date, d);
-        assert_eq!(snap.constituents.len(), 1);
+        assert_eq!(snap.date, day_in(prev, 3));
     }
 
-    /// An origin failure is an error, not a reason to answer with an older
-    /// month as if it were the newest.
+    /// Offline after a month rollover, the newest cached month still answers,
+    /// dated as what it is.
     #[tokio::test]
-    async fn latest_does_not_fall_back_to_an_older_month_on_failure() {
+    async fn latest_answers_from_an_older_month_when_the_newest_fails() {
         let server = wiremock::MockServer::start().await;
         let ym = YearMonth::current_utc();
         wiremock::Mock::given(wiremock::matchers::path(format!(
@@ -799,11 +872,38 @@ mod tests {
         .mount(&server)
         .await;
         let prev = ym.prev();
-        let d = NaiveDate::from_ymd_opt(prev.year(), prev.month(), 3).unwrap();
-        serve_month(&server, IndexId::Sp400, prev, &[row("OLD", d)]).await;
+        serve_month(
+            &server,
+            IndexId::Sp400,
+            prev,
+            &[row("OLD", day_in(prev, 3), DataSource::IsharesCdn)],
+        )
+        .await;
         let cache = tempfile::TempDir::new().unwrap();
-        let res = client_for(&server, &cache).latest(IndexId::Sp400).await;
-        assert!(res.is_err(), "served an older month instead: {res:?}");
+        let snap = client_for(&server, &cache)
+            .latest(IndexId::Sp400)
+            .await
+            .unwrap();
+        assert_eq!(snap.date, day_in(prev, 3));
+    }
+
+    /// When nothing answers, the caller learns why rather than "no data".
+    #[tokio::test]
+    async fn latest_reports_the_fetch_failure_when_no_month_answers() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let cache = tempfile::TempDir::new().unwrap();
+        let err = client_for(&server, &cache)
+            .latest(IndexId::Sp400)
+            .await
+            .unwrap_err();
+        assert!(
+            !matches!(err, Error::SnapshotNotFound { .. }),
+            "reported no data instead of the failure: {err}"
+        );
     }
 
     #[test]

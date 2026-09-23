@@ -20,8 +20,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   0001100663, series S000004344) and `sponsor_url` (IWM via the
   iShares CSV CDN).
 - `latest(IndexId)` and `Indexkit::latest` (plus `latest_blocking`)
-  return a `DailySnapshot` of the newest day with data for any index,
-  with tickers wherever that day came from a sponsor holdings file.
+  return a `DailySnapshot` of the newest day from the most authoritative
+  source for any index, with tickers wherever that day came from a
+  sponsor holdings file.
   Before, only S&P 500, Nasdaq-100 and DJIA had a free latest function
   and Russell 2000 had no latest accessor at all.
 - `parse_holdings(source, body, as_of)` dispatches a sponsor body to
@@ -97,12 +98,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 
 - **`*_latest()` returns one day, not the whole month.** A month file
-  holds every day fetched that month, and `sp500_latest` / `ndx_latest`
-  / `dji_latest` (and the S&P 400 / 600 client methods) returned all of
-  it, so a caller who deduplicated tickers kept members that had left
-  mid-month. They now
-  return only the newest day. A failed fetch of the newest month is an
-  error rather than a silent answer from an older month. (Closes #96.)
+  holds every day fetched that month from every source, and
+  `sp500_latest` / `ndx_latest` / `dji_latest` (and the S&P 400 / 600
+  client methods) returned all of it, so a caller who deduplicated
+  tickers kept members that had left mid-month. They now return the
+  newest day of the month's most authoritative source only. Taking the
+  newest date across sources is not enough: the monthly membership list
+  is stamped on the 15th from the first of the month, so it would have
+  been returned, dated in the future, until then, and mixed with the
+  sponsor file after it. (Closes #96.)
 - **S&P 400, S&P 600 and Russell 2000 daily holdings fetch again.**
   iShares answers its old `1467271812596.ajax` holdings URLs with the
   product page and status 200, and `fetch_today` took any 2xx as the
