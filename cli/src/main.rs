@@ -136,6 +136,15 @@ enum Command {
     /// Generate `data/manifest.json` with SHA-256 digests for every parquet.
     Manifest,
 
+    /// Print what the stored data covers for each index as a Markdown table,
+    /// or write it into a README between the coverage markers.
+    Coverage {
+        /// Rewrite the table between `<!-- coverage:start -->` and
+        /// `<!-- coverage:end -->` in this file instead of printing it.
+        #[arg(long)]
+        readme: Option<PathBuf>,
+    },
+
     /// Write `data/cik-map.json` -- committed for non-Rust consumers.
     CikMap,
 }
@@ -188,6 +197,7 @@ async fn main() -> Result<()> {
         Command::Normalize { index } => cmd_normalize(&data_dir, index.as_deref())?,
         Command::Get { index, month } => cmd_get(&data_dir, &index, month.as_deref())?,
         Command::Manifest => cmd_manifest(&data_dir)?,
+        Command::Coverage { readme } => cmd_coverage(&data_dir, readme.as_deref())?,
         Command::CikMap => cmd_cik_map(&data_dir)?,
     }
     Ok(())
@@ -747,6 +757,126 @@ fn cmd_normalize(data_dir: &Path, index_filter: Option<&str>) -> Result<()> {
     if rewrote_any {
         cmd_manifest(data_dir)?;
     }
+    Ok(())
+}
+
+// ---- coverage ----
+
+/// The days one kind of source answers for an index.
+#[derive(Default)]
+struct Span {
+    days: std::collections::BTreeSet<NaiveDate>,
+}
+
+impl Span {
+    /// `first to last (n units)`, or `-` when no day is answered from it.
+    fn render(&self, unit: &str, month_only: bool) -> String {
+        let (Some(first), Some(last)) = (self.days.first(), self.days.last()) else {
+            return "-".into();
+        };
+        let fmt = |d: &NaiveDate| {
+            if month_only {
+                d.format("%Y-%m").to_string()
+            } else {
+                d.to_string()
+            }
+        };
+        let n = self.days.len();
+        let plural = if n == 1 { "" } else { "s" };
+        format!("{} to {} ({n} {unit}{plural})", fmt(first), fmt(last))
+    }
+}
+
+fn cmd_coverage(data_dir: &Path, readme: Option<&Path>) -> Result<()> {
+    let today = Utc::now().date_naive();
+    let mut table = String::from(
+        "| Index | Months stored | Days from daily holdings (weights, tickers) \
+         | Days from daily membership (tickers) | Days from monthly membership (tickers) \
+         | Days from quarterly holdings (weights, CUSIPs) | Newest day |\n\
+         |---|---|---|---|---|---|---|\n",
+    );
+    for idx in IndexId::ALL {
+        let months = existing_months(&data_dir.join(idx.as_str()));
+        let (Some(first), Some(last)) = (months.first(), months.last()) else {
+            continue;
+        };
+        let (mut holdings, mut filing, mut daily_list, mut monthly_list) = (
+            Span::default(),
+            Span::default(),
+            Span::default(),
+            Span::default(),
+        );
+        let mut newest: Vec<Constituent> = Vec::new();
+        for &ym in &months {
+            let rows = existing_rows(data_dir, idx.as_str(), ym);
+            // Each day counts once, under the source that answers it (the
+            // highest priority present), as `on` and `latest` serve it.
+            let mut best: BTreeMap<NaiveDate, &DataSource> = BTreeMap::new();
+            for r in &rows {
+                let slot = best.entry(r.as_of).or_insert(&r.source);
+                if r.source.priority() > slot.priority() {
+                    *slot = &r.source;
+                }
+            }
+            for (day, source) in best {
+                let span = match source {
+                    DataSource::IsharesCdn
+                    | DataSource::InvescoCdn
+                    | DataSource::SpdrCdn
+                    | DataSource::NasdaqApi
+                    | DataSource::Wayback(_) => &mut holdings,
+                    DataSource::SecNport => &mut filing,
+                    DataSource::GithubFja05680 | DataSource::GithubHanshof => &mut daily_list,
+                    DataSource::GithubYfiua { .. } => &mut monthly_list,
+                    _ => continue,
+                };
+                span.days.insert(day);
+            }
+            if ym == *last {
+                newest = rows;
+            }
+        }
+        // The newest day as `latest` answers it: the best source dated no
+        // later than today, then that source's newest day.
+        newest.retain(|r| r.as_of <= today);
+        let top = newest.iter().map(|r| r.source.priority()).max();
+        newest.retain(|r| Some(r.source.priority()) == top);
+        let day = newest.iter().map(|r| r.as_of).max();
+        let members = newest.iter().filter(|r| Some(r.as_of) == day).count();
+        let name = match idx {
+            IndexId::Sp500 => "S&P 500",
+            IndexId::Sp400 => "S&P MidCap 400",
+            IndexId::Sp600 => "S&P SmallCap 600",
+            IndexId::Ndx => "Nasdaq-100",
+            IndexId::Dji => "Dow Jones Industrial Average",
+            IndexId::Rut => "Russell 2000",
+            _ => idx.as_str(),
+        };
+        table.push_str(&format!(
+            "| {name} | {first} to {last} | {} | {} | {} | {} | {} |\n",
+            holdings.render("day", false),
+            daily_list.render("day", false),
+            monthly_list.render("day", false),
+            filing.render("day", false),
+            day.map_or("-".into(), |d| format!("{d}, {members} members")),
+        ));
+    }
+    let Some(path) = readme else {
+        print!("{table}");
+        return Ok(());
+    };
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let (start, end) = ("<!-- coverage:start -->", "<!-- coverage:end -->");
+    let (Some(a), Some(b)) = (text.find(start), text.find(end)) else {
+        bail!("{} has no {start} ... {end} section", path.display());
+    };
+    let section = format!(
+        "{start}\nAs of {today}, from the bundled data (`indexkit-cli coverage`, run by the nightly):\n\n{table}"
+    );
+    std::fs::write(path, format!("{}{section}{}", &text[..a], &text[b..]))
+        .with_context(|| format!("writing {}", path.display()))?;
+    println!("Wrote coverage table -> {}", path.display());
     Ok(())
 }
 

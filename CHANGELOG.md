@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `indexkit-cli coverage` prints, per index, the days each kind of source
+  answers (daily holdings, daily membership, monthly membership, quarterly
+  holdings) and the newest day. `--readme` writes that table into the
+  README's Coverage section, and the nightly refreshes it with the data.
+- The README's Coverage section says where each index comes from and which
+  fields each kind of row carries.
+
 ### Fixed
 
 - **The nightly appended no new quarterly holdings for the S&P 500,

@@ -85,22 +85,56 @@ indexkit-cli normalize
 
 # Regenerate data/manifest.json after any other data change
 indexkit-cli manifest
+
+# Print what the bundled data covers per index (the table under Coverage)
+indexkit-cli coverage
 ```
 
 Run `indexkit-cli --help` for the full command list.
 
 ## Coverage
 
-| Index | History | Daily holdings with weights |
-|---|---|---|
-| S&P 500 | Daily membership from 1996-01 | From 2026-04 |
-| S&P MidCap 400 | Quarterly from 2019-12 | From 2026-09 |
-| S&P SmallCap 600 | Quarterly from 2019-12 | From 2026-09 |
-| Nasdaq-100 | Quarterly from 2019-12, monthly membership from 2023-07 | From 2026-09 |
-| Dow Jones Industrial Average | Quarterly from 2020-01, monthly membership from 2023-07 | From 2026-04 |
-| Russell 2000 | Quarterly from 2019-12 | From 2026-09 |
+Six indices, each assembled from up to four kinds of source. The table shows what the bundled data holds for each; the two below it say where each kind comes from and what its rows carry.
 
-Quarterly months carry the fund's regulatory holdings; membership rows carry tickers only. `latest` returns the newest day from the best source in the newest month that has data: the sponsor holdings when a daily file has been fetched, otherwise the membership list or the quarterly holdings.
+<!-- coverage:start -->
+As of 2026-09-24, from the bundled data (`indexkit-cli coverage`, run by the nightly):
+
+| Index | Months stored | Days from daily holdings (weights, tickers) | Days from daily membership (tickers) | Days from monthly membership (tickers) | Days from quarterly holdings (weights, CUSIPs) | Newest day |
+|---|---|---|---|---|---|---|
+| S&P 500 | 1996-01 to 2026-09 | 2026-04-27 to 2026-09-22 (101 days) | 1996-01-02 to 2026-01-14 (10971 days) | 2026-01-15 to 2026-08-15 (5 days) | - | 2026-09-22, 503 members |
+| S&P MidCap 400 | 2019-12 to 2026-09 | 2026-09-21 to 2026-09-21 (1 day) | - | - | 2019-12-31 to 2026-06-30 (27 days) | 2026-09-21, 400 members |
+| S&P SmallCap 600 | 2019-12 to 2026-09 | 2026-09-22 to 2026-09-22 (1 day) | - | - | 2019-12-31 to 2026-06-30 (27 days) | 2026-09-22, 603 members |
+| Nasdaq-100 | 2019-12 to 2026-09 | 2026-09-22 to 2026-09-22 (1 day) | - | 2023-07-15 to 2026-09-15 (39 days) | 2019-12-31 to 2025-12-31 (25 days) | 2026-09-22, 101 members |
+| Dow Jones Industrial Average | 2020-01 to 2026-09 | 2026-04-27 to 2026-09-22 (101 days) | - | 2023-07-15 to 2026-08-15 (35 days) | 2020-01-31 to 2026-01-31 (25 days) | 2026-09-22, 30 members |
+| Russell 2000 | 2019-12 to 2026-09 | 2026-09-21 to 2026-09-21 (1 day) | - | - | 2019-12-31 to 2026-06-30 (27 days) | 2026-09-21, 1974 members |
+<!-- coverage:end -->
+
+A day is answered by one source, the first of these that covers it: daily holdings, daily membership, monthly membership, quarterly holdings. `latest(id)` returns the newest such day, `on(id, date)` any other, and `constituents(id, month)` every row of the month from every source, each tagged with its `source`.
+
+### Where each index comes from
+
+| Index | Daily holdings | Quarterly holdings (N-PORT) | Membership lists |
+|---|---|---|---|
+| S&P 500 | SPY, with IVV as backup | IVV | fja05680 and hanshof (daily, to 2026-01), yfiua (monthly) |
+| S&P MidCap 400 | IJH, with MDY as backup | IJH | - |
+| S&P SmallCap 600 | IJR, with SPSM as backup | IJR | - |
+| Nasdaq-100 | QQQ, with QQQM as backup | QQQ | yfiua (monthly) |
+| Dow Jones Industrial Average | DIA | DIA | yfiua (monthly) |
+| Russell 2000 | IWM | IWM | - |
+
+The daily holdings are the funds' own published files, fetched each trading day, so daily coverage starts when fetching began, not with the fund. The quarterly holdings are the same funds' filings with the SEC, public from 2019. The membership lists come from the open datasets under [Attribution](#attribution); the two daily ones stopped updating upstream in 2026-01.
+
+### What each kind of row carries
+
+| Kind of source | Cadence | Ticker | CUSIP | Weight | Shares | Market value |
+|---|---|---|---|---|---|---|
+| Daily holdings, SPDR (SPY, MDY, SPSM, DIA) | Trading day | Yes | No | Yes | Yes | No |
+| Daily holdings, iShares (IVV, IJH, IJR, IWM) | Trading day | Yes | No | Yes | Yes | Yes |
+| Daily holdings, Invesco (QQQ, QQQM) | Trading day | Yes | Yes | Yes | Yes | No |
+| Quarterly holdings (N-PORT) | Quarter-end | No | Yes | Yes | Yes | Yes |
+| Membership lists | Daily or monthly | Yes | No | No | No | No |
+
+A weight is a fraction of the fund's net assets (`0.0712` for 7.12%); where a source has none it is `NaN`, and `weight_opt()` returns `None`. Missing shares and market values are `0.0`. Tickers are stored in one spelling across sources, `BRK.B`.
 
 ## Data
 
