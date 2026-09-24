@@ -58,6 +58,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **Breaking:** `IndexId` and `DataSource` are `#[non_exhaustive]`. Both
+  have grown since 1.0 (`IndexId::Rut`, `DataSource::NasdaqApi`), which
+  broke every exhaustive `match` downstream; a wildcard arm is now
+  required, and the next index or source will not be a breaking change.
 - **`on` and `daily_range` answer each day from its best source.** A day
   two sources cover used to return both, and the sources key rows
   differently: the hanshof mirror spells `BF-B` where fja spells `BF.B`,

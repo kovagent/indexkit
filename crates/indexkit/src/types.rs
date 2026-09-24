@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 /// Rows written by different sources for the same `(index, identity, date)`
 /// are reconciled by the [`crate::coalesce`] layer, which keeps a single
 /// best row per key based on each source's [`priority`](DataSource::priority).
+///
+/// Sources are added as upstreams change, so match with a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum DataSource {
     /// Live sponsor CDN (iShares, Invesco, State Street).
     ///
@@ -317,8 +320,11 @@ pub struct DailySnapshot {
 /// Supported index identifiers.
 ///
 /// Strings: `"sp500"`, `"sp400"`, `"sp600"`, `"ndx"`, `"dji"`, `"rut"`.
+///
+/// Indices are added over time, so match with a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum IndexId {
     /// S&P 500 (via IVV -- iShares Core S&P 500 ETF).
     Sp500,
