@@ -277,7 +277,7 @@ pub fn tickers_to_constituents(
             // One spelling across sources, and no derivative or when-issued
             // codes a mirror picked up from a fund file.
             let t = crate::sponsor::canonical_ticker(t)?;
-            if !crate::sponsor::is_listed_stock(Some(&t), "") {
+            if !crate::sponsor::is_index_member(Some(&t), "", f64::NAN) {
                 return None;
             }
             Some(Constituent {
