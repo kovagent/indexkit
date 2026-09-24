@@ -4,7 +4,7 @@ on:
   pull_request: { branches: [main] }
 jobs:
   ci:
-    uses: kovagent/kit-ci/.github/workflows/ci.yml@6ec005a7feb3df22c7011a50bdfefe324f37696f
+    uses: kovagent/kit-ci/.github/workflows/ci.yml@b776ff790842d9c41bb30cbd415c282889974aec
     with:
       # Clients verify each data file against the manifest, so a data change
       # committed without regenerating it is served as a checksum error.
