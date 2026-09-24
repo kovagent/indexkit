@@ -79,11 +79,12 @@ indexkit-cli get sp500 --month 2024-01
 # Backfill local data for an index
 indexkit-cli backfill --index ndx --start 2023-01
 
-# Regenerate data/manifest.json after a data change
-indexkit-cli manifest
-
-# Re-apply the ingestion rules (one ticker spelling, index members only) to stored months
+# Re-apply the ingestion rules (one ticker spelling, index members only) to stored months;
+# regenerates data/manifest.json when it rewrites anything
 indexkit-cli normalize
+
+# Regenerate data/manifest.json after any other data change
+indexkit-cli manifest
 ```
 
 Run `indexkit-cli --help` for the full command list.
