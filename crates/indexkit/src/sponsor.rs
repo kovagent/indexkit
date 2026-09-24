@@ -140,7 +140,7 @@ pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static s
     }
 }
 
-/// Holdings URLs sponsors have retired, for Wayback backfills.
+/// Holdings URLs no longer fetched live, for Wayback backfills.
 ///
 /// A capture of a retired URL still holds the file it served then, which the
 /// current URL's captures do not cover.
@@ -405,13 +405,10 @@ pub fn parse_ishares_csv(
         {
             continue;
         }
-        // iShares spells a share class `BRK B` / `MOG A` where SPDR, the other
-        // fund for the same index, spells it `BRK.B` / `MOG.A`. One spelling
-        // keeps the two files the same members when both land on a day.
+        // iShares spells a share class `BRK B` / `MOG A`; see canonical_ticker.
         let ticker = ticker_i
             .and_then(|i| row.get(i))
-            .filter(|s| !s.is_empty() && *s != "-")
-            .map(|s| s.replace([' ', '/'], "."));
+            .and_then(|s| canonical_ticker(s));
         let name = name_i.and_then(|i| row.get(i)).cloned().unwrap_or_default();
         if !is_listed_stock(ticker.as_deref(), &name) {
             continue;
@@ -574,7 +571,7 @@ pub fn parse_invesco_csv(csv: &str, as_of_fallback: NaiveDate) -> Result<Vec<Con
             }
         }
         out.push(Constituent {
-            ticker: ticker.filter(|s| !s.is_empty() && s != "-"),
+            ticker: ticker.as_deref().and_then(canonical_ticker),
             name,
             cusip,
             lei: None,
@@ -641,25 +638,22 @@ pub fn parse_invesco_dng_json(body: &[u8], as_of_fallback: NaiveDate) -> Result<
                 .unwrap_or("");
             kind == "Common Stock" || kind.starts_with("American Depository Receipt")
         })
-        .map(|h| {
-            let ticker = str_field(h, "ticker");
-            Constituent {
-                name: str_field(h, "issuerName"),
-                ticker: (!ticker.is_empty()).then_some(ticker),
-                cusip: str_field(h, "cusip"),
-                lei: None,
-                shares: h.get("units").and_then(|n| n.as_f64()).unwrap_or(0.0),
-                market_value_usd: 0.0,
-                weight: h
-                    .get("percentageOfTotalNetAssets")
-                    .and_then(|n| n.as_f64())
-                    .unwrap_or(0.0)
-                    / 100.0,
-                issuer_cik: None,
-                sector: None,
-                as_of,
-                source: DataSource::InvescoCdn,
-            }
+        .map(|h| Constituent {
+            name: str_field(h, "issuerName"),
+            ticker: canonical_ticker(&str_field(h, "ticker")),
+            cusip: str_field(h, "cusip"),
+            lei: None,
+            shares: h.get("units").and_then(|n| n.as_f64()).unwrap_or(0.0),
+            market_value_usd: 0.0,
+            weight: h
+                .get("percentageOfTotalNetAssets")
+                .and_then(|n| n.as_f64())
+                .unwrap_or(0.0)
+                / 100.0,
+            issuer_cik: None,
+            sector: None,
+            as_of,
+            source: DataSource::InvescoCdn,
         })
         .collect();
     if out.is_empty() {
@@ -675,22 +669,39 @@ pub fn parse_invesco_dng_json(body: &[u8], as_of_fallback: NaiveDate) -> Result<
 
 // -- helpers --
 
-/// Whether a holdings line is a listed stock an index can contain.
+/// A ticker in the one spelling every row is stored under: upper case, with
+/// a share class after a dot (`BRK.B`).
+///
+/// Sources spell the class with a space (`BRK B`, iShares), a slash, or a
+/// dash (`BRK-B`, the hanshof mirror), and one mirror annotates renames
+/// (`RVTY (Previously PKI)`). Without one spelling the same member appears
+/// twice on a day that two sources cover. `None` for an empty or `-` cell.
+pub fn canonical_ticker(raw: &str) -> Option<String> {
+    let t = raw.split(" (").next().unwrap_or_default().trim();
+    if t.is_empty() || t == "-" {
+        return None;
+    }
+    Some(t.to_ascii_uppercase().replace([' ', '/', '-'], "."))
+}
+
+/// Whether a holdings line is a listed stock an index can contain, given its
+/// [`canonical_ticker`] (if any) and name.
 ///
 /// Funds list other lines beside their stocks under the same asset class:
 /// cash and money-market sweeps, index futures, earnout and derivative lines
 /// (whose tickers carry digits or underscores, e.g. `RTYZ6`, `2602335D`,
-/// `CASH_USD`), and contingent value rights, escrow and private-placement
-/// lines, which keep a stock-like ticker and say what they are in the name
-/// (`AKERO THERAPEUTICS CVR`, `TRINSEO PLC Prvt`). A listed US ticker is
-/// letters, with at most one share-class separator (`BRK.B`, `MOG A`).
-fn is_listed_stock(ticker: Option<&str>, name: &str) -> bool {
+/// `CASH_USD`), when-issued lines (a `W` class, `MBGL.W`), and contingent
+/// value rights, escrow and private-placement lines, which keep a stock-like
+/// ticker and say what they are in the name (`AKERO THERAPEUTICS CVR`,
+/// `TRINSEO PLC Prvt`). A listed US ticker is letters, with at most one share
+/// class after a dot.
+pub fn is_listed_stock(ticker: Option<&str>, name: &str) -> bool {
+    let letters = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_uppercase());
     let ticker_ok = ticker.is_none_or(|t| {
-        let parts: Vec<&str> = t.split(['.', '/', ' ']).collect();
-        parts.len() <= 2
-            && parts
-                .iter()
-                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_uppercase()))
+        let mut parts = t.split('.');
+        let root = parts.next().unwrap_or_default();
+        let class = parts.next();
+        parts.next().is_none() && letters(root) && class.is_none_or(|c| letters(c) && c != "W")
     });
     let name = name.trim_end().to_ascii_uppercase();
     ticker_ok
@@ -805,7 +816,7 @@ pub fn parse_nasdaq_ndx_json(body: &[u8], as_of_fallback: NaiveDate) -> Result<V
             0.0
         };
         out.push(Constituent {
-            ticker: Some(symbol.clone()),
+            ticker: canonical_ticker(&symbol),
             name: if name.is_empty() { symbol } else { name },
             cusip: String::new(),
             lei: None,
@@ -989,7 +1000,10 @@ pub fn parse_spdr_xlsx(bytes: &[u8], as_of_fallback: NaiveDate) -> Result<Vec<Co
     for (row_idx, row) in range.rows().enumerate().skip(header_row_idx + 1) {
         let _ = row_idx;
         let ticker = match row.get(c_ticker) {
-            Some(Data::String(s)) => s.trim().to_string(),
+            Some(Data::String(s)) => match canonical_ticker(s) {
+                Some(t) => t,
+                None => continue,
+            },
             _ => continue,
         };
         // Cash, futures, earnouts and rights share the sheet with the stocks.
@@ -1511,16 +1525,18 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
         assert!(!rows.iter().any(|r| r.name.contains("DOLLAR")));
     }
 
-    /// Lines taken from the live SPY, SPSM, MDY and IWM files on 2026-09-23.
+    /// Lines taken from the live SPY, SPSM, MDY and IWM files on 2026-09-23
+    /// and from the stored S&P 500 history.
     #[test]
     fn only_listed_stocks_count_as_holdings() {
         for (ticker, name) in [
             ("CASH", "PATHWARD FINANCIAL INC"),
-            ("BRK.B", "BERKSHIRE HATHAWAY INC CL B"),
+            ("BRK B", "BERKSHIRE HATHAWAY INC CL B"),
             ("MOG A", "MOOG INC CLASS A"),
             ("CVI", "CVR ENERGY INC"),
         ] {
-            assert!(is_listed_stock(Some(ticker), name), "{ticker} {name}");
+            let t = canonical_ticker(ticker);
+            assert!(is_listed_stock(t.as_deref(), name), "{ticker} {name}");
         }
         for (ticker, name) in [
             ("RTYZ6", "E-MINI RUSS 2000  DEC26"),
@@ -1530,9 +1546,26 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
             ("AKE", "AKERO THERAPEUTICS CVR"),
             ("GTXI", "GTXI INC - CVR"),
             ("TSE", "TRINSEO PLC Prvt"),
+            ("MBGL-W", "MOBILITY GLOBAL INC W"),
         ] {
-            assert!(!is_listed_stock(Some(ticker), name), "{ticker} {name}");
+            let t = canonical_ticker(ticker);
+            assert!(!is_listed_stock(t.as_deref(), name), "{ticker} {name}");
         }
+    }
+
+    /// The spellings the sources use for one share class, and a mirror's
+    /// rename annotation, all store as one ticker.
+    #[test]
+    fn every_source_spelling_stores_as_one_ticker() {
+        for raw in ["BRK.B", "BRK B", "BRK/B", "BRK-B", "brk.b", " BRK-B "] {
+            assert_eq!(canonical_ticker(raw).as_deref(), Some("BRK.B"), "{raw:?}");
+        }
+        assert_eq!(
+            canonical_ticker("RVTY (Previously PKI)").as_deref(),
+            Some("RVTY")
+        );
+        assert_eq!(canonical_ticker("-"), None);
+        assert_eq!(canonical_ticker("  "), None);
     }
 
     #[test]
