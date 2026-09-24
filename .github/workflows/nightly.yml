@@ -42,8 +42,8 @@ jobs:
       - name: Show data status
         run: |
           for d in sp500 sp400 sp600 ndx dji rut; do
-            count=$(ls data/$d/ 2>/dev/null | wc -l)
-            latest=$(ls data/$d/ 2>/dev/null | tail -1)
+            count=$(find "data/$d" -name '*.parquet' 2>/dev/null | wc -l)
+            latest=$(find "data/$d" -name '*.parquet' 2>/dev/null | sort | tail -1 | xargs -r basename)
             echo "$d: $count files (latest: $latest)"
           done
       - name: Commit if changed
