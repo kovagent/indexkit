@@ -374,8 +374,8 @@ impl Indexkit {
     /// The rows come from one source: the day's highest-priority one (see
     /// [`DataSource::priority`](crate::types::DataSource::priority)), and among
     /// sources of equal priority the one listing the most rows. Sources key
-    /// rows differently (SPY's file and the membership lists by ticker, IVV's
-    /// file and the quarterly filing by CUSIP), so merging two that cover the
+    /// rows differently (the fund files and membership lists by ticker, the
+    /// quarterly filing by CUSIP), so merging two that cover the
     /// same day would list each member twice. On a quarter-end day with both
     /// the filing and a membership list, the list answers: it is complete and
     /// has tickers, but no weights; the filing's weights remain available
