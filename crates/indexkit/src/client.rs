@@ -264,7 +264,7 @@ impl Indexkit {
         self.range(IndexId::Ndx, start, end).await
     }
 
-    /// Dow Jones Industrial Average constituents (via DIA).
+    /// Dow Jones Industrial Average constituents for the given month.
     pub async fn dji(&self, ym: impl IntoYearMonth) -> Result<Vec<Constituent>> {
         self.constituents_by_id(IndexId::Dji, ym).await
     }
