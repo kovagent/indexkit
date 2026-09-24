@@ -762,75 +762,40 @@ fn cmd_normalize(data_dir: &Path, index_filter: Option<&str>) -> Result<()> {
 
 // ---- coverage ----
 
-/// The days one kind of source answers for an index.
-#[derive(Default)]
-struct Span {
-    days: std::collections::BTreeSet<NaiveDate>,
-}
-
-impl Span {
-    /// `first to last (n units)`, or `-` when no day is answered from it.
-    fn render(&self, unit: &str, month_only: bool) -> String {
-        let (Some(first), Some(last)) = (self.days.first(), self.days.last()) else {
-            return "-".into();
-        };
-        let fmt = |d: &NaiveDate| {
-            if month_only {
-                d.format("%Y-%m").to_string()
-            } else {
-                d.to_string()
-            }
-        };
-        let n = self.days.len();
-        let plural = if n == 1 { "" } else { "s" };
-        format!("{} to {} ({n} {unit}{plural})", fmt(first), fmt(last))
-    }
-}
-
+/// The README's coverage table: for each index, the month its history starts,
+/// the month its daily holdings with weights start, and the newest day with
+/// its member count. Printed, or written between the README's markers by the
+/// nightly, so the newest day is always the data's own.
 fn cmd_coverage(data_dir: &Path, readme: Option<&Path>) -> Result<()> {
     let today = Utc::now().date_naive();
     let mut table = String::from(
-        "| Index | Months stored | Days from daily holdings (weights, tickers) \
-         | Days from daily membership (tickers) | Days from monthly membership (tickers) \
-         | Days from quarterly holdings (weights, CUSIPs) | Newest day |\n\
-         |---|---|---|---|---|---|---|\n",
+        "| Index | History from | Daily holdings with weights from | Newest day |\n\
+         |---|---|---|---|\n",
     );
     for idx in IndexId::ALL {
         let months = existing_months(&data_dir.join(idx.as_str()));
         let (Some(first), Some(last)) = (months.first(), months.last()) else {
             continue;
         };
-        let (mut holdings, mut filing, mut daily_list, mut monthly_list) = (
-            Span::default(),
-            Span::default(),
-            Span::default(),
-            Span::default(),
-        );
+        let mut daily_from: Option<NaiveDate> = None;
         let mut newest: Vec<Constituent> = Vec::new();
         for &ym in &months {
             let rows = existing_rows(data_dir, idx.as_str(), ym);
-            // Each day counts once, under the source that answers it (the
-            // highest priority present), as `on` and `latest` serve it.
-            let mut best: BTreeMap<NaiveDate, &DataSource> = BTreeMap::new();
-            for r in &rows {
-                let slot = best.entry(r.as_of).or_insert(&r.source);
-                if r.source.priority() > slot.priority() {
-                    *slot = &r.source;
-                }
-            }
-            for (day, source) in best {
-                let span = match source {
-                    DataSource::IsharesCdn
-                    | DataSource::InvescoCdn
-                    | DataSource::SpdrCdn
-                    | DataSource::NasdaqApi
-                    | DataSource::Wayback(_) => &mut holdings,
-                    DataSource::SecNport => &mut filing,
-                    DataSource::GithubFja05680 | DataSource::GithubHanshof => &mut daily_list,
-                    DataSource::GithubYfiua { .. } => &mut monthly_list,
-                    _ => continue,
-                };
-                span.days.insert(day);
+            if daily_from.is_none() {
+                daily_from = rows
+                    .iter()
+                    .filter(|r| {
+                        matches!(
+                            r.source,
+                            DataSource::IsharesCdn
+                                | DataSource::InvescoCdn
+                                | DataSource::SpdrCdn
+                                | DataSource::NasdaqApi
+                                | DataSource::Wayback(_)
+                        )
+                    })
+                    .map(|r| r.as_of)
+                    .min();
             }
             if ym == *last {
                 newest = rows;
@@ -853,11 +818,8 @@ fn cmd_coverage(data_dir: &Path, readme: Option<&Path>) -> Result<()> {
             _ => idx.as_str(),
         };
         table.push_str(&format!(
-            "| {name} | {first} to {last} | {} | {} | {} | {} | {} |\n",
-            holdings.render("day", false),
-            daily_list.render("day", false),
-            monthly_list.render("day", false),
-            filing.render("day", false),
+            "| {name} | {first} | {} | {} |\n",
+            daily_from.map_or("-".into(), |d| d.format("%Y-%m").to_string()),
             day.map_or("-".into(), |d| format!("{d}, {members} members")),
         ));
     }
@@ -871,9 +833,7 @@ fn cmd_coverage(data_dir: &Path, readme: Option<&Path>) -> Result<()> {
     let (Some(a), Some(b)) = (text.find(start), text.find(end)) else {
         bail!("{} has no {start} ... {end} section", path.display());
     };
-    let section = format!(
-        "{start}\nAs of {today}, from the bundled data (`indexkit-cli coverage`, run by the nightly):\n\n{table}"
-    );
+    let section = format!("{start}\nUpdated by the nightly from the bundled data:\n\n{table}");
     std::fs::write(path, format!("{}{section}{}", &text[..a], &text[b..]))
         .with_context(|| format!("writing {}", path.display()))?;
     println!("Wrote coverage table -> {}", path.display());

@@ -9,10 +9,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- `indexkit-cli coverage` prints, per index, the days each kind of source
-  answers (daily holdings, daily membership, monthly membership, quarterly
-  holdings) and the newest day. `--readme` writes that table into the
-  README's Coverage section, and the nightly refreshes it with the data.
+- `indexkit-cli coverage` prints, per index, the month its history starts,
+  the month its daily holdings with weights start, and the newest day with
+  its member count. `--readme` writes that table into the README's Coverage
+  section, and the nightly refreshes it with the data, so nobody edits it.
 - The README's Coverage section says where each index comes from and which
   fields each kind of row carries.
 
