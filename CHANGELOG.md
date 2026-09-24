@@ -23,11 +23,15 @@ major version. The upgrade notes come first.
   list answers: it is complete where the filing is not, but it has no
   weights. The filing's weights stay available for that month through
   `constituents` and `weight`.
+- `sponsor_url` returns each index's current primary, which for the S&P 500
+  is now SPY's XLSX file and for the Nasdaq-100 Invesco's holdings JSON, and
+  the iShares URLs now serve the `latest-holdings.csv` export, which has no
+  CUSIP column. Parse a sponsor body with `parse_holdings` and the
+  `DataSource` it came with rather than a fixed parser.
 - `parse_ishares_csv` and `parse_invesco_csv` return an error when the
   header row is missing, where they returned an empty list.
 - Every row stores its ticker in one spelling, `BRK.B`, whatever the source
-  wrote. iShares rows carry no CUSIP, because the current iShares export has
-  none, and are keyed by ticker.
+  wrote. iShares rows carry no CUSIP and are keyed by ticker.
 - `SponsorClient::fetch_today` accepts a body only if it parses as that
   sponsor's holdings file and lists most of the index.
 - The default data origin, CDN mirror and repository link are under
@@ -39,21 +43,23 @@ major version. The upgrade notes come first.
 
 - **Russell 2000** (`IndexId::Rut`): quarterly holdings from IWM's N-PORT
   filings since 2019-12 and daily holdings from IWM's file.
+- **Daily Dow Jones holdings**, from DIA's file, through the new SPDR XLSX
+  parser `parse_spdr_xlsx`. (Closes #1.)
 - **`latest(id)`**, `Indexkit::latest` and `latest_blocking`: the newest day
   of any index as a `DailySnapshot`, from the newest month's
   highest-priority source, never dated after today. A month that cannot be
   fetched and is not cached is passed over, so it works offline from the
   newest cached month; the snapshot's date says which day it is.
+  (Closes #94.)
 - **A backup source per index where one exists**, `sponsor_urls`: SPY then
   IVV for the S&P 500, IJH then MDY for the S&P 400, IJR then SPSM for the
-  S&P 600, QQQ then QQQM for the Nasdaq-100, DIA for the Dow and IWM for the
-  Russell 2000. `retired_sponsor_urls` lists URLs read from Wayback captures
-  only.
-- Parsers for every sponsor file: `parse_spdr_xlsx` (SPDR XLSX),
-  `parse_invesco_dng_json` (Invesco's holdings JSON),
-  `parse_nasdaq_ndx_json` (Nasdaq's list API, for its captures), and
-  `parse_holdings`, which dispatches a body to its parser and errors on a
-  wrong file or one with no members.
+  S&P 600, QQQ then QQQM for the Nasdaq-100; DIA for the Dow and IWM for the
+  Russell 2000 have no second usable file. `retired_sponsor_urls` lists URLs
+  read from Wayback captures only. (Closes #3.)
+- `parse_invesco_dng_json` (Invesco's holdings JSON), `parse_nasdaq_ndx_json`
+  (Nasdaq's list API, for its captures), and `parse_holdings`, which
+  dispatches a body to its parser and errors on a wrong file or one with no
+  members.
 - `canonical_ticker` and `is_index_member`: the one spelling tickers are
   stored under, and the rule that tells an index member from the other
   lines a fund file carries.
@@ -62,69 +68,64 @@ major version. The upgrade notes come first.
 
 ### Changed
 
-- **Each day comes from one source.** Sources key rows differently: SPY's
-  file and the membership lists by ticker, IVV's file and the N-PORT filing
-  by CUSIP, and the hanshof list spells `BF-B` where fja spells `BF.B`. A
-  day two of them covered listed each such member twice; nearly every stored
-  S&P 500 day listed `BF.B` twice, and each quarter-end day listed every
-  member twice. `on`, `daily_range` and `latest` now take the day's
-  highest-priority source, and among equals the one listing the most rows.
-- **The Nasdaq-100 comes from Invesco's QQQ holdings, with QQQM as
-  backup.** Nasdaq's list API resets any client that identifies itself
-  rather than presenting as a browser, so it is read from Wayback captures
-  only. QQQ's file also carries the fund's weights and CUSIPs.
+- **Each day comes from one source.** Sources key rows differently: the
+  N-PORT filing by CUSIP, the fund files and membership lists by ticker,
+  and the hanshof list spells `BF-B` where fja spells `BF.B`. A day two of
+  them covered listed each such member twice; nearly every stored S&P 500
+  day listed `BF.B` twice, and each quarter-end day listed every member
+  twice. `on`, `daily_range` and `latest` now take the day's
+  highest-priority source; among equals, the one listing the most rows,
+  then the index's primary.
+- **The Nasdaq-100 comes from Invesco's QQQ holdings JSON, with QQQM as
+  backup.** Invesco retired the QQQ CSV URL 1.0 read, which then answered
+  with its homepage, so the Nasdaq-100 had no daily rows. Nasdaq's list API
+  resets any client that identifies itself rather than presenting as a
+  browser, so it is read from Wayback captures only. (Closes #6.)
 - **The nightly fails when a fetch fails.** `daily-fetch` and
   `nightly-append` attempt every index, write what succeeded, and exit
   non-zero naming the indices that failed; the nightly then fails its run.
   Both used to exit 0, so the nightly stayed green for months while four
   indices wrote nothing.
+- `wayback-backfill` reads every endpoint of an index, and the retired URLs
+  whose captures hold the files served before each change, keeping one
+  endpoint per capture date because its rows carry only that date. 1.0 read
+  the primary URL only.
 - The README coverage table states what the bundled data holds: quarterly
   history for the S&P 400, S&P 600, Nasdaq-100 and Russell 2000, and daily
   holdings with weights from 2026-04 (S&P 500, Dow) or 2026-09 (the
   others).
+- CI checks that a data change is committed with its manifest; clients
+  verify every file against the manifest and refuse a mismatch.
 - Request User-Agents carry the crate version.
 
 ### Fixed
 
 - **Members listed twice, and lines that are not members.** Every parser,
   the membership mirrors included, stores tickers through
-  `canonical_ticker` and keeps only lines `is_index_member` accepts: not
-  cash and money-market sweeps, index futures, rights, warrants or
-  when-issued lines, contingent value rights, escrow, private or unlisted
-  lines. A line under a fund's internal placeholder code is kept when it
-  carries a member's weight, because a fund lists a member it still holds
-  that way while a corporate action is processed (SPY listed ExxonMobil as
+  `canonical_ticker` (iShares' `BRK B` and SPDR's `BRK.B` are one ticker)
+  and keeps only lines `is_index_member` accepts: not cash and
+  money-market sweeps, index futures, rights, warrants or when-issued
+  lines, contingent value rights, escrow, private, unlisted or contra lines.
+  A line under a fund's internal placeholder code is kept when it carries a
+  member's weight, because a fund lists a member it still holds that way
+  while a corporate action is processed (SPY listed ExxonMobil as
   `2670549D` on 2026-07-01). An iShares member held only through a swap is
   kept at its notional weight. `normalize` applied the same rules to the
-  bundled history: 15,658 S&P 500 tickers respelled, 108 non-member rows
-  dropped, 15,655 duplicate rows merged.
-- **S&P 400, S&P 600 and Russell 2000 daily holdings arrive.** iShares
-  answers its old holdings URLs with the product page and status 200, which
-  was taken for the file, parsed to nothing, and stopped the backups from
-  being tried. The iShares endpoints use the `latest-holdings.csv` export,
-  and a body that is not holdings, or lists well under the index, falls
-  through to the next endpoint. SSGA no longer serves SLY's file; SPSM
-  replaces it. (Closes #7, #95.)
+  bundled history: 15,658 S&P 500 tickers respelled, 108 rows that are not
+  member lines dropped (residual, derivative, when-issued, right and
+  warrant codes), 15,655 duplicate rows merged.
+- **S&P 400 and S&P 600 daily holdings arrive again.** iShares dropped the
+  quotes from its CSV header, which the parser did not recognise (#5), and
+  later answered its old holdings URLs with the product page and status
+  200, which was taken for the file and parsed to nothing. The header is
+  recognised in both shapes, the iShares endpoints use the
+  `latest-holdings.csv` export, and a body that is not holdings, or lists
+  well under the index, falls through to the next endpoint. SSGA no longer
+  serves SLY's file; SPSM is the S&P 600 backup. (Closes #5, #7, #95.)
 - **`*_latest()` returned the whole month.** A caller who deduplicated the
-  tickers kept members that had left mid-month; the monthly membership list,
-  stamped on the 15th from the first of the month, also answered dated in
-  the future until then. (Closes #94, #96.)
-- **The Russell 2000 read LQD's filings.** Its series was recorded as
-  S000004361, the iShares iBoxx investment grade corporate bond ETF, so
-  every filing parsed to zero equity holdings. IWM is S000004344.
-- **The Invesco backups returned ten holdings.** They were routed to the CSV
-  parser though the endpoint serves JSON, and requested the page's top-ten
-  view.
-- **Share classes spelled two ways.** iShares' `BRK B` and SPDR's `BRK.B`
-  are one ticker, so a day served by either fund of an index lists each
-  member once.
+  tickers kept members that had left mid-month. (Closes #96.)
 - **`quick-xml` 0.41 and `calamine` 0.36** clear RUSTSEC-2026-0194 and
   RUSTSEC-2026-0195, which failed the nightly security sweep every day.
-- **Wayback backfills keep one endpoint per capture date**, since their
-  rows carry only the capture date, and also read the retired sponsor URLs,
-  whose captures hold the files served before each change.
-- **A data change committed without its manifest is caught in CI.** Clients
-  verify every file against the manifest and refuse a mismatch.
 - The docs no longer promise a GICS sector "in v1.1", count five indices, or
   tie an index to one ETF.
 
