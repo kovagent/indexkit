@@ -31,7 +31,7 @@ use indexkit::nport::holdings_to_constituents;
 use indexkit::parquet_io::{read_month, write_month};
 use indexkit::sec::SecClient;
 use indexkit::sponsor::{
-    canonical_ticker, is_listed_stock, parse_holdings, retired_sponsor_urls, sponsor_urls,
+    canonical_ticker, is_index_member, parse_holdings, retired_sponsor_urls, sponsor_urls,
     SponsorClient,
 };
 use indexkit::types::DataSource;
@@ -705,7 +705,7 @@ fn cmd_normalize(data_dir: &Path, index_filter: Option<&str>) -> Result<()> {
                         month_renamed += 1;
                         r.ticker = canonical;
                     }
-                    is_listed_stock(r.ticker.as_deref(), &r.name).then_some(r)
+                    is_index_member(r.ticker.as_deref(), &r.name, r.weight).then_some(r)
                 })
                 .collect();
             let listed = kept.len();

@@ -412,7 +412,15 @@ pub fn parse_ishares_csv(
             .and_then(|i| row.get(i))
             .and_then(|s| canonical_ticker(s));
         let name = name_i.and_then(|i| row.get(i)).cloned().unwrap_or_default();
-        if !is_listed_stock(ticker.as_deref(), &name) {
+        // A swap has no market weight; its exposure is its notional weight.
+        let weight_col = if swap { notional_weight_i } else { weight_i };
+        let weight_pct = weight_col
+            .and_then(|i| row.get(i))
+            .and_then(|s| parse_number(s))
+            .unwrap_or(0.0);
+        // iShares reports weights as percents (e.g. 7.12), not fractions.
+        let weight = weight_pct / 100.0;
+        if !is_index_member(ticker.as_deref(), &name, weight) {
             continue;
         }
         let cusip = cusip_i
@@ -437,14 +445,6 @@ pub fn parse_ishares_csv(
             .and_then(|i| row.get(i))
             .and_then(|s| parse_number(s))
             .unwrap_or(0.0);
-        // A swap has no market weight; its exposure is its notional weight.
-        let weight_col = if swap { notional_weight_i } else { weight_i };
-        let weight_pct = weight_col
-            .and_then(|i| row.get(i))
-            .and_then(|s| parse_number(s))
-            .unwrap_or(0.0);
-        // iShares reports weights as percents (e.g. 7.12), not fractions.
-        let weight = weight_pct / 100.0;
         let mv = mv_i
             .and_then(|i| row.get(i))
             .and_then(|s| parse_number(s))
@@ -586,6 +586,7 @@ pub fn parse_invesco_csv(csv: &str, as_of_fallback: NaiveDate) -> Result<Vec<Con
             source: DataSource::InvescoCdn,
         });
     }
+    out.retain(|c| is_index_member(c.ticker.as_deref(), &c.name, c.weight));
     out.sort_by(|a, b| {
         b.weight
             .partial_cmp(&a.weight)
@@ -658,6 +659,7 @@ pub fn parse_invesco_dng_json(body: &[u8], as_of_fallback: NaiveDate) -> Result<
             source: DataSource::InvescoCdn,
         })
         .collect();
+    out.retain(|c| is_index_member(c.ticker.as_deref(), &c.name, c.weight));
     if out.is_empty() {
         return Err(Error::Other("invesco json: zero equity holdings".into()));
     }
@@ -686,24 +688,46 @@ pub fn canonical_ticker(raw: &str) -> Option<String> {
     Some(t.to_ascii_uppercase().replace([' ', '/', '-'], "."))
 }
 
-/// Whether a holdings line is a listed stock an index can contain, given its
-/// [`canonical_ticker`] (if any) and name.
+/// The smallest weight, as a fraction, a placeholder-coded line needs to count
+/// as an index member (see [`is_index_member`]). The smallest S&P 500 member
+/// weighs roughly 0.005%; residual and earnout lines weigh 0 to 0.0001%.
+const MIN_PLACEHOLDER_WEIGHT: f64 = 1e-5;
+
+/// Whether a holdings line is an index member, given its [`canonical_ticker`]
+/// (if any), name, and weight as a fraction (`NaN` when the source has none).
 ///
-/// Funds list other lines beside their stocks under the same asset class:
-/// cash and money-market sweeps, index futures, earnout and derivative lines
-/// (whose tickers carry digits or underscores, e.g. `RTYZ6`, `2602335D`,
-/// `CASH_USD`), when-issued lines (a `W` class, `MBGL.W`), and contingent
-/// value rights, escrow and private-placement lines, which keep a stock-like
-/// ticker and say what they are in the name (`AKERO THERAPEUTICS CVR`,
-/// `TRINSEO PLC Prvt`). A listed US ticker is letters, with at most one share
-/// class after a dot.
-pub fn is_listed_stock(ticker: Option<&str>, name: &str) -> bool {
+/// Funds list other lines beside their members under the same asset class:
+/// cash and money-market sweeps (`CASH_USD`), index futures (`RTYZ6`), rights,
+/// warrants and when-issued lines (a class that is not a single letter, or is
+/// `W`: `BMY.RT`, `OXY.WT`, `MBGL.W`), and contingent value rights, escrow and
+/// private-placement lines, which keep a stock-like ticker and say what they
+/// are in the name (`AKERO THERAPEUTICS CVR`, `TRINSEO PLC Prvt`). A member's
+/// ticker is letters, with at most a one-letter share class after a dot.
+///
+/// A fund also recodes a member it still holds under an internal placeholder,
+/// digits and a letter, for the days a corporate action is processed: SPY
+/// listed ExxonMobil as `2670549D EXXONMOBIL HOLDINGS CORP` at 0.88% on
+/// 2026-07-01, and ONEOK as `2682320D FALCON TOPCO INC` on 2026-09-10. Such a
+/// line is a member when it carries a member's weight; the residual and
+/// earnout lines on the same kind of code carry next to none.
+pub fn is_index_member(ticker: Option<&str>, name: &str, weight: f64) -> bool {
     let letters = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_uppercase());
     let ticker_ok = ticker.is_none_or(|t| {
         let mut parts = t.split('.');
         let root = parts.next().unwrap_or_default();
         let class = parts.next();
-        parts.next().is_none() && letters(root) && class.is_none_or(|c| letters(c) && c != "W")
+        if parts.next().is_some() {
+            return false;
+        }
+        let listed = letters(root) && class.is_none_or(|c| c.len() == 1 && letters(c) && c != "W");
+        let placeholder = class.is_none()
+            && root.len() >= 2
+            && root.as_bytes()[..root.len() - 1]
+                .iter()
+                .all(u8::is_ascii_digit)
+            && root.as_bytes()[root.len() - 1].is_ascii_uppercase()
+            && weight >= MIN_PLACEHOLDER_WEIGHT;
+        listed || placeholder
     });
     let name = name.trim_end().to_ascii_uppercase();
     ticker_ok
@@ -831,6 +855,7 @@ pub fn parse_nasdaq_ndx_json(body: &[u8], as_of_fallback: NaiveDate) -> Result<V
             source: DataSource::NasdaqApi,
         });
     }
+    out.retain(|c| is_index_member(c.ticker.as_deref(), &c.name, c.weight));
     out.sort_by(|a, b| {
         b.weight
             .partial_cmp(&a.weight)
@@ -1015,7 +1040,8 @@ pub fn parse_spdr_xlsx(bytes: &[u8], as_of_fallback: NaiveDate) -> Result<Vec<Co
             Some(Data::String(s)) => s.trim(),
             _ => "",
         };
-        if !is_listed_stock(Some(&ticker), name_cell) {
+        let weight_pct = cell_as_f64(row.get(c_weight)).unwrap_or(0.0);
+        if !is_index_member(Some(&ticker), name_cell, weight_pct / 100.0) {
             continue;
         }
         if let Some(c) = col_asset {
@@ -1033,7 +1059,6 @@ pub fn parse_spdr_xlsx(bytes: &[u8], as_of_fallback: NaiveDate) -> Result<Vec<Co
             _ => ticker.clone(),
         };
         let shares = cell_as_f64(row.get(c_shares)).unwrap_or(0.0);
-        let weight_pct = cell_as_f64(row.get(c_weight)).unwrap_or(0.0);
         out.push(Constituent {
             ticker: Some(ticker),
             name,
@@ -1541,21 +1566,60 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
             ("CVI", "CVR ENERGY INC"),
         ] {
             let t = canonical_ticker(ticker);
-            assert!(is_listed_stock(t.as_deref(), name), "{ticker} {name}");
+            assert!(
+                is_index_member(t.as_deref(), name, 0.001),
+                "{ticker} {name}"
+            );
         }
         for (ticker, name) in [
             ("RTYZ6", "E-MINI RUSS 2000  DEC26"),
-            ("2602335D", "TPG INC"),
             ("CASH_USD", "U.S. Dollar"),
             ("P5N994", "Petrocorp Inc Escrow"),
             ("AKE", "AKERO THERAPEUTICS CVR"),
             ("GTXI", "GTXI INC - CVR"),
             ("TSE", "TRINSEO PLC Prvt"),
             ("MBGL-W", "MOBILITY GLOBAL INC W"),
+            ("BMY.RT", ""),
+            ("OXY.WT", ""),
+            ("OXY.WTWI", ""),
         ] {
             let t = canonical_ticker(ticker);
-            assert!(!is_listed_stock(t.as_deref(), name), "{ticker} {name}");
+            assert!(
+                !is_index_member(t.as_deref(), name, 0.001),
+                "{ticker} {name}"
+            );
         }
+    }
+
+    /// A member a fund still holds can sit under an internal placeholder code
+    /// while a corporate action is processed; it keeps a member's weight. The
+    /// residual and earnout lines on such codes weigh next to nothing, and a
+    /// mirror row carries no weight at all.
+    #[test]
+    fn a_placeholder_line_is_a_member_only_at_a_members_weight() {
+        let exxon = canonical_ticker("2670549D");
+        assert!(is_index_member(
+            exxon.as_deref(),
+            "EXXONMOBIL HOLDINGS CORP",
+            0.00878
+        ));
+        assert!(is_index_member(
+            Some("2682320D"),
+            "FALCON TOPCO INC",
+            0.00092
+        ));
+        assert!(!is_index_member(Some("2602335D"), "TPG INC", 3e-8));
+        assert!(!is_index_member(
+            Some("2200963D"),
+            "OMNIAB INC   12.5 EARNOUT",
+            0.0
+        ));
+        assert!(!is_index_member(Some("2483490D"), "", f64::NAN));
+        assert!(!is_index_member(
+            Some("RTYZ6"),
+            "E-MINI RUSS 2000  DEC26",
+            0.001
+        ));
     }
 
     /// The spellings the sources use for one share class, and a mirror's
