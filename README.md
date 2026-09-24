@@ -6,7 +6,7 @@ Daily index constituents for the S&P 500, S&P 400/600, Nasdaq-100, Dow Jones and
 
 ```toml
 [dependencies]
-indexkit = "1.0"
+indexkit = "2"
 ```
 
 To track unreleased changes, depend on the repository directly:

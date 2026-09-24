@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-24
+
 This release fixes every open issue and changes the public API, so it is a
 major version. The upgrade notes come first.
 
