@@ -4,7 +4,7 @@ on:
     tags: ["v[0-9]*"]
 jobs:
   release:
-    uses: kovagent/kit-ci/.github/workflows/release.yml@28fc202d7ddafe5c5ee6886da01027f8342d3673
+    uses: kovagent/kit-ci/.github/workflows/release.yml@6ec005a7feb3df22c7011a50bdfefe324f37696f
     with:
       crates: "indexkit indexkit-cli"
     secrets:
