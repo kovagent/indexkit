@@ -5,7 +5,7 @@
 //! provide orders of magnitude more historical coverage than SEC EDGAR
 //! N-PORT (which only starts in Nov 2019).
 //!
-//! # Sources (v1.0.1)
+//! # Sources
 //!
 //! | Source | License | Coverage | Granularity | Fields |
 //! |---|---|---|---|---|
@@ -46,7 +46,11 @@ use std::time::Duration;
 
 /// User-Agent for GitHub mirror fetches. GitHub raw endpoints do not
 /// require a descriptive UA but some OSS operators rate-limit by UA.
-pub const GITHUB_USER_AGENT: &str = "indexkit/1.0.1 (+https://github.com/kovagent/indexkit)";
+pub const GITHUB_USER_AGENT: &str = concat!(
+    "indexkit/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/kovagent/indexkit)"
+);
 
 /// Raw URL of the fja05680/sp500 historical components CSV (dated file --
 /// updated through 2026-01-14 as of v1.0.1 release).

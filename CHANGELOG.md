@@ -79,6 +79,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   presenting as a browser, so the nightly never reached it; QQQ's file is
   also the richer one, with the fund's weights and CUSIPs. The API is
   read from its Wayback captures only.
+- The request User-Agents carry the crate version at build time instead
+  of a hand-written one that had fallen behind.
 - The default data origin and CDN mirror, the crate's repository link
   and the request User-Agents point at `kovagent/indexkit`, where the
   repository now lives. The old `userFRM` URLs only worked through
