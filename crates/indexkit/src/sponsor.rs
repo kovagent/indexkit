@@ -701,8 +701,12 @@ const MIN_PLACEHOLDER_WEIGHT: f64 = 1e-5;
 /// warrants and when-issued lines (a class that is not a single letter, or is
 /// `W`: `BMY.RT`, `OXY.WT`, `MBGL.W`), and contingent value rights, escrow and
 /// private-placement lines, which keep a stock-like ticker and say what they
-/// are in the name (`AKERO THERAPEUTICS CVR`, `TRINSEO PLC Prvt`). A member's
+/// are in the name (`AKERO THERAPEUTICS CVR`, `TRINSEO PLC Prvt`), and contra
+/// lines that offset a pending deal (`CONTRA HOLOGIC INCORPO`). A member's
 /// ticker is letters, with at most a one-letter share class after a dot.
+///
+/// A kept placeholder line keeps the fund's code as its ticker: that is what
+/// the file says, and a join on the member's usual ticker misses that day.
 ///
 /// A fund also recodes a member it still holds under an internal placeholder,
 /// digits and a letter, for the days a corporate action is processed: SPY
@@ -731,6 +735,8 @@ pub fn is_index_member(ticker: Option<&str>, name: &str, weight: f64) -> bool {
     });
     let name = name.trim_end().to_ascii_uppercase();
     ticker_ok
+        // A contra line offsets a pending deal's value (`CONTRA HOLOGIC`).
+        && !name.starts_with("CONTRA ")
         && ![" CVR", " PRVT", " ESCROW"]
             .iter()
             .any(|s| name.ends_with(s))
@@ -1609,6 +1615,11 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
             0.00092
         ));
         assert!(!is_index_member(Some("2602335D"), "TPG INC", 3e-8));
+        assert!(!is_index_member(
+            Some("2602335D"),
+            "CONTRA HOLOGIC INCORPO",
+            0.01
+        ));
         assert!(!is_index_member(
             Some("2200963D"),
             "OMNIAB INC   12.5 EARNOUT",

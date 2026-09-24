@@ -137,7 +137,7 @@ impl Indexkit {
 
     /// Fetch constituents for any supported index at a given month.
     ///
-    /// `index` is a short id: `"sp500"`, `"sp400"`, `"sp600"`, `"ndx"`, `"dji"`.
+    /// `index` is a short id: `"sp500"`, `"sp400"`, `"sp600"`, `"ndx"`, `"dji"`, `"rut"`.
     ///
     /// # Errors
     ///
@@ -405,6 +405,7 @@ impl Indexkit {
                 year_month: ym.to_string(),
             })?;
         Ok(best_source(
+            id,
             month_rows.into_iter().filter(|r| r.as_of == day).collect(),
         ))
     }
@@ -445,7 +446,7 @@ impl Indexkit {
         }
         Ok(by_day
             .into_iter()
-            .map(|(date, rows)| day_snapshot(id, date, best_source(rows)))
+            .map(|(date, rows)| day_snapshot(id, date, best_source(id, rows)))
             .collect())
     }
 
@@ -672,16 +673,28 @@ fn newest_day(id: IndexId, rows: Vec<Constituent>, today: NaiveDate) -> Option<D
         .into_iter()
         .filter(|r| r.as_of == date && r.source.priority() == tier)
         .collect();
-    Some(day_snapshot(id, date, best_source(day)))
+    Some(day_snapshot(id, date, best_source(id, day)))
 }
 
-/// The rows of `rows`, all one day's, from a single source: the highest
-/// priority, and among sources of equal priority (SPY's and IVV's files, say)
-/// the one listing the most rows.
+/// The rows of `rows`, all one day's for `id`, from a single source: the
+/// highest priority; among sources of equal priority the one listing the most
+/// rows; and among those, the one earlier in `id`'s endpoint ladder (see
+/// [`sponsor_urls`](crate::sponsor::sponsor_urls)), so a day with complete
+/// files from both of an index's funds is answered by its primary.
 ///
-/// Sources key rows differently (SPY's file by ticker, IVV's and the filing
-/// by CUSIP), so two of them on one day would list each member twice.
-fn best_source(rows: Vec<Constituent>) -> Vec<Constituent> {
+/// Sources key rows differently (the quarterly filing by CUSIP, the fund files
+/// and membership lists by ticker, a retired fund file's Wayback captures by
+/// CUSIP), so two of them on one day would list each member twice.
+fn best_source(id: IndexId, rows: Vec<Constituent>) -> Vec<Constituent> {
+    let ladder = crate::sponsor::sponsor_urls(id);
+    let rank = |s: &crate::types::DataSource| {
+        std::cmp::Reverse(
+            ladder
+                .iter()
+                .position(|(src, _, _)| src == s)
+                .unwrap_or(usize::MAX),
+        )
+    };
     let mut counts: std::collections::HashMap<&crate::types::DataSource, usize> =
         std::collections::HashMap::new();
     for r in &rows {
@@ -689,7 +702,9 @@ fn best_source(rows: Vec<Constituent>) -> Vec<Constituent> {
     }
     let Some(best) = counts
         .into_iter()
-        .max_by(|(a, na), (b, nb)| (a.priority(), na, b.tag()).cmp(&(b.priority(), nb, a.tag())))
+        .max_by(|(a, na), (b, nb)| {
+            (a.priority(), na, rank(a), b.tag()).cmp(&(b.priority(), nb, rank(b), a.tag()))
+        })
         .map(|(s, _)| s.clone())
     else {
         return rows;
@@ -833,13 +848,14 @@ mod tests {
             row("AAPL", sept(30), DataSource::GithubFja05680),
             row("AAPL", sept(30), DataSource::GithubHanshof),
         ];
-        let day = best_source(rows);
+        let day = best_source(IndexId::Sp500, rows);
         assert_eq!(day.len(), 1);
         assert_eq!(day[0].source, DataSource::GithubFja05680);
     }
 
-    /// SPY's and IVV's files share a priority but key rows differently (ticker
-    /// against CUSIP); one day served from both lists each member twice.
+    /// Sources of equal priority can key rows differently (a retired fund
+    /// file's captures by CUSIP, SPY's file by ticker); one day served from both
+    /// would list each member twice.
     #[test]
     fn a_day_takes_one_source_even_among_equals() {
         let mut ivv = row("AAPL", sept(18), DataSource::IsharesCdn);
@@ -849,9 +865,25 @@ mod tests {
             row("MSFT", sept(18), DataSource::SpdrCdn),
             ivv,
         ];
-        let day = best_source(rows);
+        let day = best_source(IndexId::Sp500, rows);
         assert_eq!(day.len(), 2);
         assert!(day.iter().all(|r| r.source == DataSource::SpdrCdn));
+    }
+
+    /// Two complete files of equal priority: the index's primary answers
+    /// (SPY for the S&P 500, IJH for the S&P 400), whatever the tags' order.
+    #[test]
+    fn equal_files_resolve_to_the_indexs_primary() {
+        let both = || {
+            vec![
+                row("AAPL", sept(18), DataSource::SpdrCdn),
+                row("AAPL", sept(18), DataSource::IsharesCdn),
+            ]
+        };
+        let sp500 = best_source(IndexId::Sp500, both());
+        assert_eq!(sp500[0].source, DataSource::SpdrCdn);
+        let sp400 = best_source(IndexId::Sp400, both());
+        assert_eq!(sp400[0].source, DataSource::IsharesCdn);
     }
 
     #[test]

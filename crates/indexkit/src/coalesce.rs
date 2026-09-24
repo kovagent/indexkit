@@ -16,8 +16,8 @@
 //!
 //! When rows from multiple sources cover the same `(identity, as_of)` key,
 //! the higher-priority source wins (its full row replaces any lower-
-//! priority row). Cross-source field enrichment (e.g. take CUSIP from
-//! N-PORT + ticker from GitHub) is deferred to v1.1.
+//! priority row). Fields are not merged across sources: N-PORT rows carry
+//! no ticker and membership lists no CUSIP, so there is no key to join on.
 
 use crate::types::Constituent;
 use std::collections::HashMap;
