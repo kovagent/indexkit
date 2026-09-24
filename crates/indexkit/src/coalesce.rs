@@ -20,7 +20,7 @@
 //! no ticker and membership lists no CUSIP, so there is no key to join on.
 
 use crate::types::Constituent;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// The coalesce identity key for a row.
 ///
@@ -43,9 +43,12 @@ fn identity_key(r: &Constituent) -> String {
 /// per `(identity, as_of)` key. See module docs for the identity rule.
 ///
 /// Order within the result: sorted by `as_of` then descending `weight`
-/// (NaN weights sort last).
+/// (NaN weights sort last), then by identity. The order is fully determined
+/// by the rows: the nightly rewrites every month it touches, and an order
+/// that varied between runs rewrote unchanged months with different bytes,
+/// committing a new copy of hundreds of files each night.
 pub fn coalesce(inputs: Vec<Vec<Constituent>>) -> Vec<Constituent> {
-    let mut picked: HashMap<(String, chrono::NaiveDate), Constituent> = HashMap::new();
+    let mut picked: BTreeMap<(String, chrono::NaiveDate), Constituent> = BTreeMap::new();
     for rows in inputs {
         for r in rows {
             let key = (identity_key(&r), r.as_of);
@@ -60,6 +63,8 @@ pub fn coalesce(inputs: Vec<Vec<Constituent>>) -> Vec<Constituent> {
                 .or_insert(r);
         }
     }
+    // Key order, and a stable sort below: rows tied on date and weight (every
+    // ticker-only row weighs NaN) keep their identity order.
     let mut out: Vec<Constituent> = picked.into_values().collect();
     // NaN-safe weight compare: treat NaN as "less than" any finite value so
     // finite-weight rows sort ahead of ticker-only rows within a date.
@@ -101,6 +106,29 @@ mod tests {
             as_of,
             source: src,
         }
+    }
+
+    /// Merging the same rows twice gives the same order, whatever order they
+    /// arrive in. Ticker-only rows all weigh NaN, so only the identity can
+    /// order them.
+    #[test]
+    fn output_order_is_fixed_by_the_rows() {
+        let d = NaiveDate::from_ymd_opt(2024, 3, 15).unwrap();
+        let rows: Vec<Constituent> = (0..60)
+            .map(|i| {
+                let mut r = row("", d, f64::NAN, DataSource::GithubFja05680);
+                r.ticker = Some(format!("T{i:02}"));
+                r
+            })
+            .collect();
+        let mut reversed = rows.clone();
+        reversed.reverse();
+        let tickers = |v: Vec<Constituent>| -> Vec<Option<String>> {
+            v.into_iter().map(|r| r.ticker).collect()
+        };
+        let first = tickers(coalesce(vec![rows.clone()]));
+        assert_eq!(first, tickers(coalesce(vec![rows])));
+        assert_eq!(first, tickers(coalesce(vec![reversed])));
     }
 
     #[test]

@@ -24,6 +24,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   or the membership lists, so their N-PORT filings stopped at 2025-12 (Dow
   2026-01) while the other indices reached 2026-06. It now skips only a
   month that already holds N-PORT rows.
+- **The nightly rewrote unchanged months with different bytes.** Merging
+  rows collected them in a hash map, so rows tied on date and weight (every
+  ticker-only row) came out in a different order each run, and each nightly
+  committed a new copy of about 445 parquet files whose content had not
+  changed. Rows now come out in a fixed order; rewriting a month twice gives
+  identical bytes.
 
 ## [2.0.0] - 2026-09-24
 
