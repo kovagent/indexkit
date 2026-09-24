@@ -56,7 +56,7 @@ pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/kovagent
 /// | SP500 | SPY (SSGA SPDR XLSX)    | IVV (iShares CSV)                               |
 /// | SP400 | IJH (iShares CSV)       | MDY (SSGA SPDR XLSX)                            |
 /// | SP600 | IJR (iShares CSV)       | SPSM (SSGA SPDR XLSX)                           |
-/// | NDX   | Nasdaq API (list-type)  | Invesco DNG QQQ JSON, then Invesco DNG QQQM JSON |
+/// | NDX   | QQQ (Invesco DNG JSON)  | QQQM (Invesco DNG JSON)                         |
 /// | DJIA  | DIA (SSGA SPDR XLSX)    | (none — no comparable second)                   |
 /// | RUT   | IWM (iShares CSV)       | (none — VTWO needs JS scraper)                  |
 pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static str)> {
@@ -98,22 +98,13 @@ pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static s
             ),
         ],
         IndexId::Ndx => vec![
-            // Nasdaq's own public list-type API -- official source of the
-            // NDX constituent universe, free, unauthenticated, no geo-block.
-            // Returns the full 100+ ticker universe with market cap and
-            // last sale price. Primary because the legacy Invesco
-            // download URL was retired in 2026-Q1 (HTTP 301 -> homepage).
-            (
-                DataSource::NasdaqApi,
-                "NDX",
-                "https://api.nasdaq.com/api/quote/list-type/nasdaq100",
-            ),
             // Invesco DNG (Distribution Next-Gen) holdings JSON for QQQ
             // -- the endpoint Invesco's own QQQ product page calls to
-            // render its all-holdings modal. Reachable from US egress;
-            // EU edge currently returns HTTP 406 (geo-block). Without a
-            // `loadType` it returns every holding; `loadType=initial` is
-            // the page's first render and stops at the top ten.
+            // render its all-holdings modal. The fund's own holdings, with
+            // CUSIPs and weights. Reachable from US egress; the EU edge
+            // returns HTTP 406 (geo-block). Without a `loadType` it returns
+            // every holding; `loadType=initial` is the page's first render
+            // and stops at the top ten.
             (
                 DataSource::InvescoCdn,
                 "QQQ",
@@ -142,8 +133,10 @@ pub fn sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static s
 
 /// Holdings URLs no longer fetched live, for Wayback backfills.
 ///
-/// A capture of a retired URL still holds the file it served then, which the
-/// current URL's captures do not cover.
+/// A capture of such a URL still holds the file it served then, which the
+/// live URLs' captures do not cover. Most were retired by their sponsor;
+/// Nasdaq's list API still answers browsers but resets any client that names
+/// itself, so it is only read through its captures.
 pub fn retired_sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'static str)> {
     match index {
         IndexId::Sp500 => vec![(
@@ -173,7 +166,12 @@ pub fn retired_sponsor_urls(index: IndexId) -> Vec<(DataSource, &'static str, &'
             "IWM",
             "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund",
         )],
-        IndexId::Ndx | IndexId::Dji => Vec::new(),
+        IndexId::Ndx => vec![(
+            DataSource::NasdaqApi,
+            "NDX",
+            "https://api.nasdaq.com/api/quote/list-type/nasdaq100",
+        )],
+        IndexId::Dji => Vec::new(),
     }
 }
 
@@ -1446,18 +1444,21 @@ QQQ,594918104,MSFT,MICROSOFT CORP,4.81,47300000,19500000000,03/15/2024
         assert_eq!(sp600[0].1, "IJR");
         assert_eq!(sp600[1].1, "SPSM");
 
-        // NDX: Nasdaq's public list-type API is primary (official, free,
-        // no geo-block). Invesco DNG endpoints for QQQ + QQQM follow as
-        // backups.
+        // NDX: the fund's own holdings, QQQ then QQQM. Nasdaq's list API
+        // resets clients that identify themselves and is archive-only.
         let ndx = sponsor_urls(IndexId::Ndx);
-        assert_eq!(ndx.len(), 3);
-        assert_eq!(ndx[0].0, DataSource::NasdaqApi);
-        assert_eq!(ndx[0].1, "NDX");
-        assert!(ndx[0].2.contains("api.nasdaq.com"));
-        assert_eq!(ndx[1].0, DataSource::InvescoCdn);
-        assert_eq!(ndx[1].1, "QQQ");
-        assert!(ndx[1].2.contains("dng-api.invesco.com"));
-        assert_eq!(ndx[2].1, "QQQM");
+        assert_eq!(ndx.len(), 2);
+        assert_eq!(ndx[0].0, DataSource::InvescoCdn);
+        assert_eq!(ndx[0].1, "QQQ");
+        assert!(
+            !ndx[0].2.contains("loadType"),
+            "loadType=initial is the top ten"
+        );
+        assert_eq!(ndx[1].1, "QQQM");
+        assert_eq!(
+            retired_sponsor_urls(IndexId::Ndx)[0].0,
+            DataSource::NasdaqApi
+        );
 
         // DJIA: DIA only.
         let dji = sponsor_urls(IndexId::Dji);

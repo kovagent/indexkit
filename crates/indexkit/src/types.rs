@@ -26,9 +26,10 @@ pub enum DataSource {
     /// (`api.nasdaq.com/api/quote/list-type/{listid}`).
     ///
     /// Free, unauthenticated JSON endpoint that returns the official
-    /// constituent universe of a Nasdaq-published index. Used as the
-    /// daily primary for NDX since Invesco's old QQQ holdings URL was
-    /// retired in 2026-Q1.
+    /// constituent universe of a Nasdaq-published index. It resets any
+    /// client that identifies itself rather than presenting as a browser,
+    /// so it is no longer fetched live; rows from it are read from Wayback
+    /// captures. NDX's daily source is Invesco's QQQ / QQQM holdings.
     ///
     /// Payload provides ticker, company name, market cap, and last sale
     /// price (no CUSIP / LEI / explicit weight). Weight is implicit in

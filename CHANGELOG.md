@@ -70,6 +70,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `BRK B`, the hanshof mirror's `BRK-B` and its rename annotations
   (`RVTY (Previously PKI)`) are rewritten at ingest, and derivative and
   when-issued codes a mirror picked up (`2483490D`, `AMTM-W`) are dropped.
+- **NDX's daily source is Invesco's QQQ holdings, with QQQM as backup.**
+  Nasdaq's list API resets any client that identifies itself instead of
+  presenting as a browser, so the nightly never reached it; QQQ's file is
+  also the richer one, with the fund's weights and CUSIPs. The API is
+  read from its Wayback captures only.
 - The default data origin and CDN mirror, the crate's repository link
   and the request User-Agents point at `kovagent/indexkit`, where the
   repository now lives. The old `userFRM` URLs only worked through
