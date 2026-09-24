@@ -102,11 +102,11 @@ As of 2026-09-24, from the bundled data (`indexkit-cli coverage`, run by the nig
 | Index | Months stored | Days from daily holdings (weights, tickers) | Days from daily membership (tickers) | Days from monthly membership (tickers) | Days from quarterly holdings (weights, CUSIPs) | Newest day |
 |---|---|---|---|---|---|---|
 | S&P 500 | 1996-01 to 2026-09 | 2026-04-27 to 2026-09-23 (102 days) | 1996-01-02 to 2026-01-14 (10971 days) | 2026-01-15 to 2026-08-15 (5 days) | 2026-03-31 to 2026-06-30 (2 days) | 2026-09-23, 503 members |
-| S&P MidCap 400 | 2019-12 to 2026-09 | 2026-09-21 to 2026-09-22 (2 days) | - | - | 2019-12-31 to 2026-06-30 (27 days) | 2026-09-22, 400 members |
+| S&P MidCap 400 | 2019-12 to 2026-09 | 2026-09-21 to 2026-09-23 (3 days) | - | - | 2019-12-31 to 2026-06-30 (27 days) | 2026-09-23, 400 members |
 | S&P SmallCap 600 | 2019-12 to 2026-09 | 2026-09-22 to 2026-09-23 (2 days) | - | - | 2019-12-31 to 2026-06-30 (27 days) | 2026-09-23, 603 members |
 | Nasdaq-100 | 2019-12 to 2026-09 | 2026-09-22 to 2026-09-23 (2 days) | - | 2023-07-15 to 2026-09-15 (39 days) | 2019-12-31 to 2026-06-30 (27 days) | 2026-09-23, 101 members |
 | Dow Jones Industrial Average | 2020-01 to 2026-09 | 2026-04-27 to 2026-09-23 (102 days) | - | 2023-07-15 to 2026-08-15 (35 days) | 2020-01-31 to 2026-07-31 (27 days) | 2026-09-23, 30 members |
-| Russell 2000 | 2019-12 to 2026-09 | 2026-09-21 to 2026-09-23 (2 days) | - | - | 2019-12-31 to 2026-06-30 (27 days) | 2026-09-23, 1973 members |
+| Russell 2000 | 2019-12 to 2026-09 | 2026-09-21 to 2026-09-23 (3 days) | - | - | 2019-12-31 to 2026-06-30 (27 days) | 2026-09-23, 1973 members |
 <!-- coverage:end -->
 
 A day is answered by one source, the first of these that covers it: daily holdings, daily membership, monthly membership, quarterly holdings. `latest(id)` returns the newest such day, `on(id, date)` any other, and `constituents(id, month)` every row of the month from every source, each tagged with its `source`.
