@@ -204,7 +204,7 @@ pub struct Constituent {
     pub weight: f64,
     /// SEC CIK of the issuer, if identifiable. Usually `None`.
     pub issuer_cik: Option<String>,
-    /// GICS / SIC sector. Reserved for v1.1; currently always `None`.
+    /// GICS sector. Always `None`: no current source carries it.
     pub sector: Option<Sector>,
     /// Date this row represents (the business day as of which the
     /// holdings are priced). For monthly-only rows from N-PORT this is
@@ -251,12 +251,10 @@ impl Constituent {
     }
 }
 
-/// GICS sector placeholder.
+/// GICS sector.
 ///
-/// Reserved for a v1.1 feature. N-PORT does not include GICS sector. A
-/// future `indexkit-gics` module will derive sector from SEC SIC codes via
-/// a SIC -> GICS cross-walk. Currently every [`Constituent::sector`] field
-/// is `None`.
+/// No current source carries a GICS sector, so every
+/// [`Constituent::sector`] is `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Sector {
     CommunicationServices,
@@ -326,17 +324,17 @@ pub struct DailySnapshot {
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum IndexId {
-    /// S&P 500 (via IVV -- iShares Core S&P 500 ETF).
+    /// S&P 500.
     Sp500,
-    /// S&P MidCap 400 (via IJH).
+    /// S&P MidCap 400.
     Sp400,
-    /// S&P SmallCap 600 (via IJR).
+    /// S&P SmallCap 600.
     Sp600,
-    /// Nasdaq-100 (via QQQ).
+    /// Nasdaq-100.
     Ndx,
-    /// Dow Jones Industrial Average (via DIA).
+    /// Dow Jones Industrial Average.
     Dji,
-    /// Russell 2000 (via IWM -- iShares Russell 2000 ETF).
+    /// Russell 2000.
     Rut,
 }
 

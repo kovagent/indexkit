@@ -1,4 +1,4 @@
-//! ETF -> CIK / series mapping for the five supported indices.
+//! ETF -> CIK / series mapping for the six supported indices.
 //!
 //! All CIK and series values are verified against live SEC submissions as of
 //! 2026-04-23. The static mapping is the source of truth for which trust to

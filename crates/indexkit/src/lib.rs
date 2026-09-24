@@ -54,9 +54,10 @@
 //! [`Constituent::weight_opt`] for an `Option<f64>` accessor that returns
 //! `None` on the NaN sentinel.
 //!
-//! # Limitations (v1.0.x)
+//! # Limitations
 //!
-//! - **No GICS sector**: reserved for v1.1 via SIC -> GICS cross-walk.
+//! - **No GICS sector**: no source carries it, so `Constituent::sector` is
+//!   always `None`.
 //! - **Filing lag**: the regulatory-filing baseline trails real time;
 //!   sponsor-published holdings close the recency gap.
 //!

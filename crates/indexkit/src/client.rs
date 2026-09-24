@@ -74,7 +74,11 @@ impl Indexkit {
     /// early detection.
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
-            .user_agent("indexkit/1.0 (+https://github.com/kovagent/indexkit)")
+            .user_agent(concat!(
+                "indexkit/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://github.com/kovagent/indexkit)"
+            ))
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
@@ -90,7 +94,11 @@ impl Indexkit {
     /// Returns [`Error`] if the underlying reqwest client cannot be constructed.
     pub fn try_new() -> Result<Self> {
         let http = reqwest::Client::builder()
-            .user_agent("indexkit/1.0 (+https://github.com/kovagent/indexkit)")
+            .user_agent(concat!(
+                "indexkit/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://github.com/kovagent/indexkit)"
+            ))
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
         Ok(Self {
@@ -180,7 +188,7 @@ impl Indexkit {
 
     // ---- Sugar methods per index ----
 
-    /// S&P 500 constituents (via IVV) for the given month.
+    /// S&P 500 constituents for the given month.
     pub async fn sp500(&self, ym: impl IntoYearMonth) -> Result<Vec<Constituent>> {
         self.constituents_by_id(IndexId::Sp500, ym).await
     }
@@ -199,7 +207,7 @@ impl Indexkit {
         self.range(IndexId::Sp500, start, end).await
     }
 
-    /// S&P 400 Mid-Cap constituents (via IJH) for the given month.
+    /// S&P 400 Mid-Cap constituents for the given month.
     pub async fn sp400(&self, ym: impl IntoYearMonth) -> Result<Vec<Constituent>> {
         self.constituents_by_id(IndexId::Sp400, ym).await
     }
@@ -218,7 +226,7 @@ impl Indexkit {
         self.range(IndexId::Sp400, start, end).await
     }
 
-    /// S&P 600 Small-Cap constituents (via IJR).
+    /// S&P 600 Small-Cap constituents for the given month.
     pub async fn sp600(&self, ym: impl IntoYearMonth) -> Result<Vec<Constituent>> {
         self.constituents_by_id(IndexId::Sp600, ym).await
     }
@@ -237,7 +245,7 @@ impl Indexkit {
         self.range(IndexId::Sp600, start, end).await
     }
 
-    /// Nasdaq-100 constituents (via QQQ).
+    /// Nasdaq-100 constituents for the given month.
     pub async fn ndx(&self, ym: impl IntoYearMonth) -> Result<Vec<Constituent>> {
         self.constituents_by_id(IndexId::Ndx, ym).await
     }

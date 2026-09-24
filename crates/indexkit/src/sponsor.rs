@@ -33,7 +33,11 @@ use std::time::Duration;
 /// Default User-Agent for sponsor-CDN fetches. Sponsors sometimes ToS-limit
 /// automated access; indexkit identifies itself clearly so traffic is not
 /// mistaken for a malicious bot.
-pub const SPONSOR_USER_AGENT: &str = "indexkit/1.0 (+https://github.com/kovagent/indexkit)";
+pub const SPONSOR_USER_AGENT: &str = concat!(
+    "indexkit/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/kovagent/indexkit)"
+);
 
 /// Ordered list of sponsor-CDN endpoints for an ETF proxy index, ranked by
 /// AUM (primary first, backups follow). [`SponsorClient::fetch_today`] walks
