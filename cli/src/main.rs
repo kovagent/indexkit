@@ -30,7 +30,10 @@ use indexkit::github_mirror::{
 use indexkit::nport::holdings_to_constituents;
 use indexkit::parquet_io::{read_month, write_month};
 use indexkit::sec::SecClient;
-use indexkit::sponsor::{parse_holdings, retired_sponsor_urls, sponsor_urls, SponsorClient};
+use indexkit::sponsor::{
+    canonical_ticker, is_listed_stock, parse_holdings, retired_sponsor_urls, sponsor_urls,
+    SponsorClient,
+};
 use indexkit::types::DataSource;
 use indexkit::wayback::WaybackClient;
 use indexkit::{Constituent, IndexId, YearMonth};
@@ -112,6 +115,15 @@ enum Command {
     /// Fetch any new N-PORT filings since last run and append.
     NightlyAppend,
 
+    /// Re-apply the ingestion rules to every stored month: one ticker
+    /// spelling across sources, and index members only. Rewrites only the
+    /// months it changes; running it again changes nothing.
+    Normalize {
+        /// Restrict to one index id (sp500, sp400, sp600, ndx, dji, rut).
+        #[arg(long)]
+        index: Option<String>,
+    },
+
     /// Read a month from bundled parquet and print to stdout.
     Get {
         index: String,
@@ -172,6 +184,7 @@ async fn main() -> Result<()> {
         }
         Command::GithubBackfill { source } => cmd_github_backfill(&data_dir, source).await?,
         Command::NightlyAppend => cmd_nightly_append(&data_dir).await?,
+        Command::Normalize { index } => cmd_normalize(&data_dir, index.as_deref())?,
         Command::Get { index, month } => cmd_get(&data_dir, &index, month.as_deref())?,
         Command::Manifest => cmd_manifest(&data_dir)?,
         Command::CikMap => cmd_cik_map(&data_dir)?,
@@ -669,6 +682,50 @@ async fn nightly_append_one(sec: &SecClient, data_dir: &Path, idx: IndexId) -> R
         wrote = true;
     }
     Ok(wrote)
+}
+
+// ---- normalize ----
+
+/// Rows written before a rule existed keep the old shape: tickers spelled per
+/// source (`BF-B` beside `BF.B`, so a member appears twice on a day two
+/// sources cover) and non-member lines taken from fund files. Ingestion
+/// applies the rules now; this applies them to what is already stored.
+fn cmd_normalize(data_dir: &Path, index_filter: Option<&str>) -> Result<()> {
+    for idx in select_indices(index_filter)? {
+        let (mut months, mut renamed, mut dropped, mut merged) = (0, 0, 0, 0);
+        for ym in existing_months(&data_dir.join(idx.as_str())) {
+            let rows = existing_rows(data_dir, idx.as_str(), ym);
+            let before = rows.len();
+            let mut month_renamed = 0;
+            let kept: Vec<Constituent> = rows
+                .into_iter()
+                .filter_map(|mut r| {
+                    let canonical = r.ticker.as_deref().and_then(canonical_ticker);
+                    if canonical != r.ticker {
+                        month_renamed += 1;
+                        r.ticker = canonical;
+                    }
+                    is_listed_stock(r.ticker.as_deref(), &r.name).then_some(r)
+                })
+                .collect();
+            let listed = kept.len();
+            let out = coalesce(vec![kept]);
+            if month_renamed == 0 && listed == before && out.len() == listed {
+                continue;
+            }
+            write_month(data_dir, idx.as_str(), &ym.to_string(), &out)
+                .with_context(|| format!("normalize {idx} {ym}"))?;
+            months += 1;
+            renamed += month_renamed;
+            dropped += before - listed;
+            merged += listed - out.len();
+        }
+        println!(
+            "{idx}: rewrote {months} months; {renamed} tickers respelled, \
+             {dropped} non-member rows dropped, {merged} duplicate rows merged"
+        );
+    }
+    Ok(())
 }
 
 // ---- get ----

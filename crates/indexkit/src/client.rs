@@ -361,13 +361,15 @@ impl Indexkit {
 
     // ---- Daily resolution endpoints ----
 
-    /// Return all rows for `index` on `date` -- daily granularity.
+    /// The rows for `index` on `date` -- daily granularity.
     ///
-    /// Behaviour: load the parent month parquet, coalesce by priority
-    /// (CDN > Wayback > N-PORT), and filter to rows whose `as_of == date`.
-    /// If no row matches exactly, returns rows from the nearest previous
-    /// business day within the same month (or the monthly baseline if
-    /// that is all that exists).
+    /// The rows come from that day's highest-priority source (see
+    /// [`DataSource::priority`](crate::types::DataSource::priority)). Sources
+    /// key rows differently (the quarterly filing by CUSIP, membership lists by
+    /// ticker), so merging two that cover the same day would list each member
+    /// twice. If `date` has no rows, the nearest earlier day in the month is
+    /// used, and failing that the month's first day (a month holding only the
+    /// quarterly filing).
     pub async fn on(&self, index: &str, date: NaiveDate) -> Result<Vec<Constituent>> {
         let id =
             IndexId::from_str_id(index).ok_or_else(|| Error::UnknownIndex(index.to_string()))?;
@@ -378,39 +380,24 @@ impl Indexkit {
     pub async fn on_by_id(&self, id: IndexId, date: NaiveDate) -> Result<Vec<Constituent>> {
         let ym = YearMonth::new(date.year(), date.month())?;
         let month_rows = self.load_month(id, ym).await?;
-
-        // Exact match.
-        let exact: Vec<Constituent> = month_rows
+        let day = month_rows
             .iter()
-            .filter(|c| c.as_of == date)
-            .cloned()
-            .collect();
-        if !exact.is_empty() {
-            return Ok(exact);
-        }
-        // Nearest previous day within the month.
-        let mut by_day: Vec<chrono::NaiveDate> = month_rows.iter().map(|r| r.as_of).collect();
-        by_day.sort_unstable();
-        by_day.dedup();
-        let chosen = by_day.iter().rev().find(|&&d| d <= date).copied();
-        if let Some(d) = chosen {
-            return Ok(month_rows.into_iter().filter(|c| c.as_of == d).collect());
-        }
-        // No daily data: return the first date in the month (N-PORT baseline).
-        if let Some(first) = by_day.first().copied() {
-            return Ok(month_rows
-                .into_iter()
-                .filter(|c| c.as_of == first)
-                .collect());
-        }
-        Err(Error::SnapshotNotFound {
-            index: id.to_string(),
-            year_month: ym.to_string(),
-        })
+            .map(|r| r.as_of)
+            .filter(|&d| d <= date)
+            .max()
+            .or_else(|| month_rows.iter().map(|r| r.as_of).min())
+            .ok_or_else(|| Error::SnapshotNotFound {
+                index: id.to_string(),
+                year_month: ym.to_string(),
+            })?;
+        Ok(best_source(
+            month_rows.into_iter().filter(|r| r.as_of == day).collect(),
+        ))
     }
 
     /// Return daily snapshots for `index` in `[start, end]` (inclusive), one
-    /// per distinct `as_of` date present in the data.
+    /// per distinct `as_of` date present in the data, each from that day's
+    /// highest-priority source (see [`on`][Self::on]).
     pub async fn daily_range(
         &self,
         id: IndexId,
@@ -444,7 +431,7 @@ impl Indexkit {
         }
         Ok(by_day
             .into_iter()
-            .map(|(date, rows)| day_snapshot(id, date, rows))
+            .map(|(date, rows)| day_snapshot(id, date, best_source(rows)))
             .collect())
     }
 
@@ -674,6 +661,16 @@ fn newest_day(id: IndexId, rows: Vec<Constituent>, today: NaiveDate) -> Option<D
     Some(day_snapshot(id, date, day))
 }
 
+/// The rows of `rows`, all one day's, from its highest-priority source.
+fn best_source(rows: Vec<Constituent>) -> Vec<Constituent> {
+    let Some(tier) = rows.iter().map(|r| r.source.priority()).max() else {
+        return rows;
+    };
+    rows.into_iter()
+        .filter(|r| r.source.priority() == tier)
+        .collect()
+}
+
 /// One day's rows as a [`DailySnapshot`], heaviest first.
 fn day_snapshot(id: IndexId, date: NaiveDate, mut rows: Vec<Constituent>) -> DailySnapshot {
     rows.sort_by(|a, b| {
@@ -798,6 +795,24 @@ mod tests {
         assert_eq!((snap.date, tickers(&snap)), (sept(15), vec!["AAA"]));
     }
 
+    /// On a day two sources cover, each keys its rows its own way (the
+    /// filing by CUSIP, a membership list by ticker), so every member would
+    /// be listed twice. The day is answered by its best source alone.
+    #[test]
+    fn a_day_is_answered_by_its_best_source() {
+        let mut filing = row("", sept(30), DataSource::SecNport);
+        filing.ticker = None;
+        filing.cusip = "037833100".into();
+        let rows = vec![
+            filing,
+            row("AAPL", sept(30), DataSource::GithubFja05680),
+            row("AAPL", sept(30), DataSource::GithubHanshof),
+        ];
+        let day = best_source(rows);
+        assert_eq!(day.len(), 1);
+        assert_eq!(day[0].source, DataSource::GithubFja05680);
+    }
+
     #[test]
     fn newest_day_is_none_when_every_row_is_dated_after_today() {
         let rows = vec![row("AAA", sept(15), DataSource::SpdrCdn)];
@@ -837,6 +852,32 @@ mod tests {
 
     fn day_in(ym: YearMonth, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(ym.year(), ym.month(), d).unwrap()
+    }
+
+    /// `on` and `daily_range` answer a day two sources cover from the better
+    /// one, so the member is listed once.
+    #[tokio::test]
+    async fn day_reads_list_a_member_once() {
+        let server = wiremock::MockServer::start().await;
+        let prev = YearMonth::current_utc().prev();
+        let d = day_in(prev, 3);
+        serve_month(
+            &server,
+            IndexId::Sp500,
+            prev,
+            &[
+                row("AAA", d, DataSource::GithubFja05680),
+                row("AAA", d, DataSource::GithubHanshof),
+                row("OLDX", d, DataSource::GithubHanshof),
+            ],
+        )
+        .await;
+        let cache = tempfile::TempDir::new().unwrap();
+        let client = client_for(&server, &cache);
+        let on = client.on_by_id(IndexId::Sp500, d).await.unwrap();
+        assert_eq!(on.len(), 1);
+        let range = client.daily_range(IndexId::Sp500, d, d).await.unwrap();
+        assert_eq!(range[0].constituents.len(), 1);
     }
 
     /// Before the first fetch of a month there is no file for it yet.

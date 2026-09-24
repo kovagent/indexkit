@@ -29,6 +29,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   its parser and errors on a wrong file or zero equity rows.
 - `parse_invesco_dng_json` parses Invesco's holdings JSON (the QQQ /
   QQQM backups for NDX), keeping common stock and depositary receipts.
+- `canonical_ticker` and `is_listed_stock` are public: the one ticker
+  spelling rows are stored under (`BRK.B`), and the rule that tells an
+  index member from the other lines a fund file carries.
+- `indexkit-cli normalize` re-applies the ingestion rules to every stored
+  month and rewrites only the months it changes. Run once on the bundled
+  data, it respelled 15,658 S&P 500 tickers, dropped 107 non-member rows
+  and merged 15,655 duplicate rows.
 - `retired_sponsor_urls(IndexId)` lists holdings URLs sponsors have
   retired; `wayback-backfill` searches their captures as well as the
   current URLs', since those captures hold the files served before the
@@ -51,6 +58,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **`on` and `daily_range` answer each day from its best source.** A day
+  two sources cover used to return both, and the sources key rows
+  differently: the hanshof mirror spells `BF-B` where fja spells `BF.B`,
+  and the quarterly filing keys by CUSIP where the membership lists key
+  by ticker. Nearly every stored S&P 500 day listed `BF.B` twice, and
+  each quarter-end day listed every member twice. Each
+  day now comes from its highest-priority source only, as `latest`
+  already does.
+- **Every source stores tickers in one spelling** (`BRK.B`): iShares'
+  `BRK B`, the hanshof mirror's `BRK-B` and its rename annotations
+  (`RVTY (Previously PKI)`) are rewritten at ingest, and derivative and
+  when-issued codes a mirror picked up (`2483490D`, `AMTM-W`) are dropped.
 - The default data origin and CDN mirror, the crate's repository link
   and the request User-Agents point at `kovagent/indexkit`, where the
   repository now lives. The old `userFRM` URLs only worked through

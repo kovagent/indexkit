@@ -270,12 +270,14 @@ pub fn tickers_to_constituents(
     tickers
         .iter()
         .filter_map(|t| {
-            let t = t.trim();
-            if t.is_empty() {
+            // One spelling across sources, and no derivative or when-issued
+            // codes a mirror picked up from a fund file.
+            let t = crate::sponsor::canonical_ticker(t)?;
+            if !crate::sponsor::is_listed_stock(Some(&t), "") {
                 return None;
             }
             Some(Constituent {
-                ticker: Some(t.to_string()),
+                ticker: Some(t),
                 name: String::new(),
                 cusip: String::new(),
                 lei: None,
@@ -455,6 +457,20 @@ async fn fetch_text(http: &reqwest::Client, url: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mirrors spell share classes their own way and carry the odd derivative
+    /// or when-issued code; rows store under the one spelling, members only.
+    #[test]
+    fn mirror_tickers_store_canonically_and_members_only() {
+        let tickers: Vec<String> = ["BF-B", "RVTY (Previously PKI)", "2483490D", "AMTM-W"]
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        let d = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
+        let rows = tickers_to_constituents(&tickers, d, DataSource::GithubHanshof);
+        let got: Vec<_> = rows.iter().filter_map(|r| r.ticker.as_deref()).collect();
+        assert_eq!(got, ["BF.B", "RVTY"]);
+    }
 
     #[test]
     fn strip_fja05680_suffix_removes_six_digits() {
