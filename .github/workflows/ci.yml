@@ -5,3 +5,7 @@ on:
 jobs:
   ci:
     uses: kovagent/kit-ci/.github/workflows/ci.yml@6ec005a7feb3df22c7011a50bdfefe324f37696f
+    with:
+      # Clients verify each data file against the manifest, so a data change
+      # committed without regenerating it is served as a checksum error.
+      manifest_check: cargo run -q --bin indexkit-cli -- manifest && git diff --exit-code data/manifest.json

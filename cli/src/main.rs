@@ -117,7 +117,8 @@ enum Command {
 
     /// Re-apply the ingestion rules to every stored month: one ticker
     /// spelling across sources, and index members only. Rewrites only the
-    /// months it changes; running it again changes nothing.
+    /// months it changes, then regenerates `data/manifest.json`; running it
+    /// again changes nothing.
     Normalize {
         /// Restrict to one index id (sp500, sp400, sp600, ndx, dji, rut).
         #[arg(long)]
@@ -704,6 +705,7 @@ async fn nightly_append_one(sec: &SecClient, data_dir: &Path, idx: IndexId) -> R
 /// sources cover) and non-member lines taken from fund files. Ingestion
 /// applies the rules now; this applies them to what is already stored.
 fn cmd_normalize(data_dir: &Path, index_filter: Option<&str>) -> Result<()> {
+    let mut rewrote_any = false;
     for idx in select_indices(index_filter)? {
         let (mut months, mut renamed, mut dropped, mut merged) = (0, 0, 0, 0);
         for ym in existing_months(&data_dir.join(idx.as_str())) {
@@ -737,6 +739,12 @@ fn cmd_normalize(data_dir: &Path, index_filter: Option<&str>) -> Result<()> {
             "{idx}: rewrote {months} months; {renamed} tickers respelled, \
              {dropped} non-member rows dropped, {merged} duplicate rows merged"
         );
+        rewrote_any |= months > 0;
+    }
+    // Clients verify each file against the manifest; a rewritten file with a
+    // stale digest is refused.
+    if rewrote_any {
+        cmd_manifest(data_dir)?;
     }
     Ok(())
 }
