@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **The nightly appended no new quarterly holdings for the S&P 500,
+  Nasdaq-100 and Dow.** `nightly-append` skipped any month that already had
+  a file, and for those three every month has one from the daily holdings
+  or the membership lists, so their N-PORT filings stopped at 2025-12 (Dow
+  2026-01) while the other indices reached 2026-06. It now skips only a
+  month that already holds N-PORT rows.
+
 ## [2.0.0] - 2026-09-24
 
 This release fixes every open issue and changes the public API, so it is a

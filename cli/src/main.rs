@@ -666,11 +666,9 @@ async fn cmd_nightly_append(data_dir: &Path) -> Result<()> {
 
 async fn nightly_append_one(sec: &SecClient, data_dir: &Path, idx: IndexId) -> Result<bool> {
     let entry = entry_for(idx);
-    let dir = data_dir.join(entry.index.clone());
-    let have: std::collections::BTreeSet<YearMonth> = existing_months(&dir);
 
     // Use the fast search-by-series path; take the 5 newest and append any
-    // months we don't already have.
+    // months whose filing we don't already have.
     let pairs = sec.filings_for_series(&entry).await?;
     let recent: Vec<_> = pairs.into_iter().take(5).collect();
 
@@ -682,14 +680,17 @@ async fn nightly_append_one(sec: &SecClient, data_dir: &Path, idx: IndexId) -> R
         let Some(ym) = period_to_year_month(period_end) else {
             continue;
         };
-        if have.contains(&ym) {
+        // A month's file can exist from daily holdings or membership lists
+        // alone, which says nothing about its filing: only a month already
+        // holding N-PORT rows is done.
+        let old = existing_rows(data_dir, idx.as_str(), ym);
+        if old.iter().any(|r| r.source == DataSource::SecNport) {
             continue;
         }
         let new_rows = holdings_to_constituents(&nport);
         if new_rows.is_empty() {
             continue;
         }
-        let old = existing_rows(data_dir, idx.as_str(), ym);
         let merged = coalesce(vec![old, new_rows]);
         write_month(data_dir, idx.as_str(), &ym.to_string(), &merged)
             .with_context(|| format!("append {idx} {ym}"))?;
