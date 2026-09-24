@@ -411,6 +411,11 @@ async fn cmd_wayback_backfill(
         }
 
         let mut by_month: BTreeMap<YearMonth, Vec<Constituent>> = BTreeMap::new();
+        // Rows are tagged with the capture date only, so two endpoints'
+        // captures on one date would be indistinguishable, and a day served
+        // from both would list each member twice. The first endpoint in ladder
+        // order keeps the date.
+        let mut captured: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (source, ticker, url) in endpoints {
             println!(
                 "{idx}/{ticker}: listing Wayback snapshots {} -> {} for {}",
@@ -425,8 +430,14 @@ async fn cmd_wayback_backfill(
             };
             println!("{idx}/{ticker}: {} snapshots found", matches.len());
 
+            let mut taken_here: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for m in matches {
                 let Some(d) = m.date() else { continue };
+                let capture = m.timestamp[..8].to_string();
+                if captured.contains(&capture) {
+                    continue;
+                }
                 let ym = YearMonth::new(d.year(), d.month()).unwrap();
                 let body = match wb.fetch(&m).await {
                     Ok(b) => b,
@@ -438,12 +449,14 @@ async fn cmd_wayback_backfill(
                 let Ok(mut rows) = parse_holdings(&source, &body, d) else {
                     continue;
                 };
-                let tag = DataSource::Wayback(m.timestamp[..8].to_string());
+                let tag = DataSource::Wayback(capture.clone());
                 for row in &mut rows {
                     row.source = tag.clone();
                 }
                 by_month.entry(ym).or_default().extend(rows);
+                taken_here.insert(capture);
             }
+            captured.extend(taken_here);
         }
 
         // Merge per-month across all endpoints.

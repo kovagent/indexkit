@@ -371,12 +371,18 @@ impl Indexkit {
 
     /// The rows for `index` on `date` -- daily granularity.
     ///
-    /// The rows come from that day's highest-priority source (see
-    /// [`DataSource::priority`](crate::types::DataSource::priority)). Sources
-    /// key rows differently (the quarterly filing by CUSIP, membership lists by
-    /// ticker), so merging two that cover the same day would list each member
-    /// twice. If `date` has no rows, the nearest earlier day in the month is
-    /// used, and failing that the month's first day (a month holding only the
+    /// The rows come from one source: the day's highest-priority one (see
+    /// [`DataSource::priority`](crate::types::DataSource::priority)), and among
+    /// sources of equal priority the one listing the most rows. Sources key
+    /// rows differently (SPY's file and the membership lists by ticker, IVV's
+    /// file and the quarterly filing by CUSIP), so merging two that cover the
+    /// same day would list each member twice. On a quarter-end day with both
+    /// the filing and a membership list, the list answers: it is complete and
+    /// has tickers, but no weights; the filing's weights remain available
+    /// through [`constituents`][Self::constituents] and [`weight`][Self::weight].
+    ///
+    /// If `date` has no rows, the nearest earlier day in the month is used,
+    /// and failing that the month's first day (a month holding only the
     /// quarterly filing).
     pub async fn on(&self, index: &str, date: NaiveDate) -> Result<Vec<Constituent>> {
         let id =
@@ -404,8 +410,8 @@ impl Indexkit {
     }
 
     /// Return daily snapshots for `index` in `[start, end]` (inclusive), one
-    /// per distinct `as_of` date present in the data, each from that day's
-    /// highest-priority source (see [`on`][Self::on]).
+    /// per distinct `as_of` date present in the data, each from one source
+    /// chosen as [`on`][Self::on] chooses it.
     pub async fn daily_range(
         &self,
         id: IndexId,
@@ -649,7 +655,7 @@ impl Default for Indexkit {
 /// all of them can land on a lower-priority list, or mix one with the sponsor
 /// file on the same day and bring back members the sponsor no longer holds.
 /// So the day is the newest one of the highest-priority source dated no later
-/// than today, and only that source's rows are returned.
+/// than today, and only one source's rows are returned (see [`best_source`]).
 fn newest_day(id: IndexId, rows: Vec<Constituent>, today: NaiveDate) -> Option<DailySnapshot> {
     let dated = |r: &Constituent| r.as_of <= today;
     let tier = rows
@@ -666,17 +672,29 @@ fn newest_day(id: IndexId, rows: Vec<Constituent>, today: NaiveDate) -> Option<D
         .into_iter()
         .filter(|r| r.as_of == date && r.source.priority() == tier)
         .collect();
-    Some(day_snapshot(id, date, day))
+    Some(day_snapshot(id, date, best_source(day)))
 }
 
-/// The rows of `rows`, all one day's, from its highest-priority source.
+/// The rows of `rows`, all one day's, from a single source: the highest
+/// priority, and among sources of equal priority (SPY's and IVV's files, say)
+/// the one listing the most rows.
+///
+/// Sources key rows differently (SPY's file by ticker, IVV's and the filing
+/// by CUSIP), so two of them on one day would list each member twice.
 fn best_source(rows: Vec<Constituent>) -> Vec<Constituent> {
-    let Some(tier) = rows.iter().map(|r| r.source.priority()).max() else {
+    let mut counts: std::collections::HashMap<&crate::types::DataSource, usize> =
+        std::collections::HashMap::new();
+    for r in &rows {
+        *counts.entry(&r.source).or_default() += 1;
+    }
+    let Some(best) = counts
+        .into_iter()
+        .max_by(|(a, na), (b, nb)| (a.priority(), na, b.tag()).cmp(&(b.priority(), nb, a.tag())))
+        .map(|(s, _)| s.clone())
+    else {
         return rows;
     };
-    rows.into_iter()
-        .filter(|r| r.source.priority() == tier)
-        .collect()
+    rows.into_iter().filter(|r| r.source == best).collect()
 }
 
 /// One day's rows as a [`DailySnapshot`], heaviest first.
@@ -686,8 +704,7 @@ fn day_snapshot(id: IndexId, date: NaiveDate, mut rows: Vec<Constituent>) -> Dai
             .partial_cmp(&a.weight)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    // Report the source of the heaviest row; a day can hold rows from more
-    // than one source.
+    // Every caller hands over one source's rows (see best_source).
     let source = rows
         .first()
         .map(|r| r.source.clone())
@@ -819,6 +836,22 @@ mod tests {
         let day = best_source(rows);
         assert_eq!(day.len(), 1);
         assert_eq!(day[0].source, DataSource::GithubFja05680);
+    }
+
+    /// SPY's and IVV's files share a priority but key rows differently (ticker
+    /// against CUSIP); one day served from both lists each member twice.
+    #[test]
+    fn a_day_takes_one_source_even_among_equals() {
+        let mut ivv = row("AAPL", sept(18), DataSource::IsharesCdn);
+        ivv.cusip = "037833100".into();
+        let rows = vec![
+            row("AAPL", sept(18), DataSource::SpdrCdn),
+            row("MSFT", sept(18), DataSource::SpdrCdn),
+            ivv,
+        ];
+        let day = best_source(rows);
+        assert_eq!(day.len(), 2);
+        assert!(day.iter().all(|r| r.source == DataSource::SpdrCdn));
     }
 
     #[test]
