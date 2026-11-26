@@ -102,9 +102,9 @@ Updated by the nightly from the bundled data:
 | Index | History from | Daily holdings with weights from | Newest day |
 |---|---|---|---|
 | S&P 500 | 1996-01 | 2026-04 | 2026-11-24, 503 members |
-| S&P MidCap 400 | 2019-12 | 2026-09 | 2026-11-24, 400 members |
-| S&P SmallCap 600 | 2019-12 | 2026-09 | 2026-11-24, 603 members |
-| Nasdaq-100 | 2019-12 | 2026-09 | 2026-11-24, 101 members |
+| S&P MidCap 400 | 2019-12 | 2026-09 | 2026-11-25, 400 members |
+| S&P SmallCap 600 | 2019-12 | 2026-09 | 2026-11-25, 603 members |
+| Nasdaq-100 | 2019-12 | 2026-09 | 2026-11-26, 101 members |
 | Dow Jones Industrial Average | 2020-01 | 2026-04 | 2026-11-24, 30 members |
 | Russell 2000 | 2019-12 | 2026-09 | 2026-11-25, 1952 members |
 <!-- coverage:end -->
